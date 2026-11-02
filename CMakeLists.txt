@@ -16,7 +16,7 @@ install(
 )
 
 install(
-  PROGRAMS scripts/rsf_device_emulator.py
+  PROGRAMS scripts/rsf_device_emulator.py scripts/rsf_gnss_geo.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

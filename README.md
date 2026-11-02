@@ -75,7 +75,7 @@ ros2 launch rsf_simulator rsf_simulator.launch.py world:=tsudanuma
 |---|---|
 | `/rsf/lio_lidar_rate_odom` | 点群と同じ時刻のセンサ姿勢(`/rsf/rsf_odom` に `base_to_sensor` を足し、ジッタと縮尺誤差を加える) |
 | `/rsf/imu` | 実機の IMU 軸(y 鉛直・z 前方)に回した IMU、ジャイロバイアス付き |
-| `/rsf/nav_sat_fix`、`/rsf/gpgga` | センサ位置から georef の逆変換で作った GNSS。`gnss_gap_zones` の区間は gps_qual 5(Float) |
+| `/rsf/nav_sat_fix`、`/rsf/gpgga` | センサ位置(map=点群座標)から、rsf_3d_localization と同じ式の逆(原点 `datum_lat/lon`、`datum_alt`)で作った GNSS。`gnss_gap_zones` の区間は gps_qual 5(Float) |
 
 パラメータは `config/rsf_device_emulator.yaml`(`emulator_params` 引数で差し替え)。誤差を 0、区間を空にすれば真値になる。
 

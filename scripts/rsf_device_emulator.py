@@ -10,7 +10,7 @@ from nmea_msgs.msg import Gpgga
 from rclpy.node import Node
 from sensor_msgs.msg import Imu, NavSatFix, PointCloud2
 
-EARTH_RADIUS_M = 6378137.0
+from rsf_gnss_geo import altitude_from_z, xy_to_latlon
 
 
 def quat_matrix(x, y, z, w):
@@ -31,8 +31,8 @@ class RsfDeviceEmulator(Node):
         p = self.declare_parameters('', [
             ('odom_in', '/rsf/rsf_odom'), ('imu_in', '/rsf/sim/imu'), ('navsat_in', '/rsf/sim/nav_sat_fix'), ('cloud_in', '/rsf/hokuyo_cloud2'),
             ('lio_out', '/rsf/lio_lidar_rate_odom'), ('imu_out', '/rsf/imu'), ('gga_out', '/rsf/gpgga'), ('navsat_out', '/rsf/nav_sat_fix'),
-            ('datum_lat', 36.083470500000004), ('datum_lon', 140.07630341666666),
-            ('map_theta_rad', -2.3500858378103646), ('map_tx', 156.89610202453204), ('map_ty', 64.64302275894745),
+            # map = 点群座標 = 公式原点(datum)中心の局所 ENU。rsf_3d_localization と同じ式の逆で緯度経度にする。
+            ('datum_lat', 36.08288044139598), ('datum_lon', 140.07654638977903), ('datum_alt', 41.1224),
             ('base_to_sensor', [0.3, 0.0, 0.35]), ('gnss_noise_m', 0.02), ('lio_jitter_m', 0.0), ('lio_scale', 1.0), ('gyro_bias_dps', 0.0), ('gnss_gap_zones', [0.0]), ('seed', 0)])
         self.p = {v.name: v.value for v in p}
         z = self.p['gnss_gap_zones']
@@ -102,12 +102,11 @@ class RsfDeviceEmulator(Node):
     def latlon(self, odom):
         p = odom.pose.pose.position
         xy = np.array([p.x, p.y]) + self.rng.normal(0.0, self.p['gnss_noise_m'], 2)
-        c, s = math.cos(self.p['map_theta_rad']), math.sin(self.p['map_theta_rad'])
-        d = xy - [self.p['map_tx'], self.p['map_ty']]
-        e, n = c * d[0] + s * d[1], -s * d[0] + c * d[1]
-        lat = self.p['datum_lat'] + math.degrees(n / EARTH_RADIUS_M)
-        lon = self.p['datum_lon'] + math.degrees(e / (EARTH_RADIUS_M * math.cos(math.radians(self.p['datum_lat']))))
-        return lat, lon
+        return xy_to_latlon(xy[0], xy[1], self.p['datum_lat'], self.p['datum_lon'])
+
+    def altitude(self, odom):
+        # localization は z = altitude + gnss_offset(z=-41.1224) として使うので altitude = map z + datum_alt
+        return altitude_from_z(odom.pose.pose.position.z, self.p['datum_alt'])
 
     def on_navsat(self, msg):
         odom = self.odom_at(msg.header.stamp.sec, msg.header.stamp.nanosec)
@@ -117,7 +116,8 @@ class RsfDeviceEmulator(Node):
         fix = NavSatFix()
         fix.header = msg.header
         fix.status.status = 0
-        fix.latitude, fix.longitude, fix.altitude = lat, lon, msg.altitude
+        alt = self.altitude(odom)
+        fix.latitude, fix.longitude, fix.altitude = lat, lon, alt
         fix.position_covariance[0] = fix.position_covariance[4] = self.p['gnss_noise_m'] ** 2
         fix.position_covariance_type = NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN
         self.navsat_pub.publish(fix)
@@ -125,7 +125,7 @@ class RsfDeviceEmulator(Node):
         g.header = msg.header
         g.lat, g.lat_dir = abs(lat), 'N' if lat >= 0 else 'S'
         g.lon, g.lon_dir = abs(lon), 'E' if lon >= 0 else 'W'
-        g.alt = msg.altitude
+        g.alt = alt
         g.gps_qual = 5 if self.in_gap(odom) else 4
         g.num_sats = 20
         g.hdop = 0.8
