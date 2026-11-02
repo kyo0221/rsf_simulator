@@ -1,0 +1,8 @@
+rsf_device_emulator:
+  ros__parameters:
+    use_sim_time: true
+    lio_jitter_m: 0.015
+    lio_scale: 1.03
+    gyro_bias_dps: 0.033
+    gnss_gap_zones: [198.8, 50.6, 165.9, 24.4, 2.5,
+                     134.0, 0.1, 111.7, 11.3, 2.5]
