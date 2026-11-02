@@ -8,30 +8,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import pcd_to_world as p  # noqa: E402
 
 
-# ---------------------------------------------------------------- affine
-def test_affine_fit_residual_below_1mm():
-    aff = p.fit_affine(-100.0, 300.0, -150.0, 250.0, step=10.0)
-    assert aff.max_residual < 1e-2   # spherical 近似では 8.8mm 程度
-
-
-def test_affine_matches_direct():
-    aff = p.fit_affine(-100.0, 300.0, -150.0, 250.0, step=10.0)
-    rng = np.random.default_rng(0)
-    x = rng.uniform(-100, 300, 50)
-    y = rng.uniform(-150, 250, 50)
-    ex, ey = p.cloud2map_exact(x, y)
-    ax, ay = aff.apply(x, y)
-    assert np.max(np.hypot(ex - ax, ey - ay)) < 1e-2
-
-
-def test_affine_reference_rotation_scale():  # 楕円体(旧)方式の参考値
-    aff = p.fit_affine(-100.0, 300.0, -150.0, 250.0, step=10.0, g=p.GeoParams(model="ellipsoid"))  # 参考値は楕円体方式
-    rot = np.degrees(np.arctan2(aff.A[1, 0], aff.A[0, 0]))
-    scale = np.sqrt(abs(np.linalg.det(aff.A)))
-    assert rot == pytest.approx(-134.793, abs=0.01)
-    assert scale == pytest.approx(1.000094, abs=2e-5)
-
-
 # ---------------------------------------------------------------- synthetic scene
 SLOPE = 0.04
 
@@ -627,54 +603,6 @@ def test_obj_normals_exact_for_rotated_box(override_out):
     assert (np.einsum("ij,ij->i", fn, vn[ni[:, 0] - 1]) > 0.999).all()
 
 
-# ================================================================ 追加: 球近似(プロジェクト定義)の座標変換
-def test_default_is_enu_origin_spherical():
-    g = p.GeoParams()
-    assert g.model == "enu_origin_spherical"
-    assert (g.origin_lat, g.origin_lon) == (36.082880, 140.076545)
-    x, y = np.array([100.0]), np.array([50.0])
-    d = np.hypot(*[a - b for a, b in zip(p.cloud2map_exact(x, y), p.cloud2map_exact(x, y, p.GeoParams(model="spherical")))])
-    assert 0.0 < d[0] < 50.0   # 別方式
-
-
-def test_origin_maps_to_latlon_origin_via_spherical_formula():
-    mx, my = p.cloud2map_exact(np.array([0.0]), np.array([0.0]))
-    ox, oy = p.latlon_to_map(np.array([36.082880]), np.array([140.076545]))
-    assert np.hypot(mx - ox, my - oy)[0] < 1e-3
-
-
-def test_enu_origin_matches_emulator_latlon_inverse():
-    rng = np.random.default_rng(2)
-    x = rng.uniform(-100, 300, 40)
-    y = rng.uniform(-150, 250, 40)
-    mx, my = p.cloud2map_exact(x, y)
-    lat, lon = p.map_to_latlon(mx, my)            # rsf_device_emulator.latlon() の式
-    lat_true, lon_true = p.cloud2latlon(x, y)     # 点群の真の緯度経度(原点 ENU の逆 ortho)
-    assert np.abs(lat - lat_true).max() < 1e-9
-    assert np.abs(lon - lon_true).max() < 1e-9
-    # アフィン近似込みでも 1cm 以内
-    aff = p.fit_affine(-150.0, 560.0, -150.0, 270.0, step=10.0)
-    ax_, ay_ = aff.apply(x, y)
-    tx, ty = p.latlon_to_map(lat_true, lon_true)
-    assert np.hypot(ax_ - tx, ay_ - ty).max() < 1e-2
-
-
-def test_ellipsoid_and_legacy_spherical_models_remain():
-    x, y = np.array([100.0]), np.array([50.0])
-    a = p.cloud2map_exact(x, y, p.GeoParams(model="ellipsoid"))
-    b = p.cloud2map_exact(x, y, p.GeoParams(model="spherical"))
-    assert 0.0 < np.hypot(a[0] - b[0], a[1] - b[1])[0] < 5.0
-
-
-def test_map_latlon_roundtrip_under_1cm():
-    rng = np.random.default_rng(3)
-    mx = rng.uniform(-300, 300, 50)
-    my = rng.uniform(-450, 200, 50)
-    lat, lon = p.map_to_latlon(mx, my)
-    bx, by = p.latlon_to_map(lat, lon)
-    assert np.hypot(bx - mx, by - my).max() < 1e-2
-
-
 # ================================================================ 追加: collision を経路周辺に絞る
 ROUTE = np.array([[-10.0, 0.0], [10.0, 0.0]])
 
@@ -761,3 +689,84 @@ def test_model_sdf_references_terrain_collision(route_runs):
     col = sdf[sdf.index('<collision name="terrain_collision">'):sdf.index('</collision>')]
     assert "meshes/terrain.obj" in vis and "terrain_collision.obj" not in vis
     assert "meshes/terrain_collision.obj" in col
+
+
+# ================================================================ 追加: 柱の置換 yaml (点群座標)
+
+
+def test_box_override_center_is_pillar_cloud_coords():
+    here = os.path.join(os.path.dirname(__file__), "..", "box_overrides.yaml")
+    b = p.load_boxes(here)[0]
+    assert (b["center_x"], b["center_y"]) == pytest.approx((446.482, 185.027), abs=1e-3)
+    assert b["size_x"] == 1.10 and b["size_y"] == 0.45 and b["z_top_h"] == 3.86
+
+
+# ================================================================ 追加: 経路沿い地形の平滑化
+def _plane(x, y):
+    return 0.05 * x + 0.02 * y
+
+
+def make_bumpy_grid():
+    cell = 0.2
+    n = 200
+    origin = (-20.0, -20.0)
+    cx = origin[0] + (np.arange(n) + 0.5) * cell
+    cy = origin[1] + (np.arange(n) + 0.5) * cell
+    X, Y = np.meshgrid(cx, cy)
+    z = _plane(X, Y) + 0.075 * np.sin(2 * np.pi * X / 2.0)       # 凸凹 (振幅 7.5cm = 15cm p-p)
+    z = z + np.where((np.abs(X - 3.0) < 0.2) & (np.abs(Y - 0.5) < 0.2), 0.3, 0.0)   # 30cm スパイク
+    z = z + np.where((np.abs(X + 6.0) < 0.2) & (np.abs(Y + 1.0) < 0.2), 0.3, 0.0)
+    return z.astype(np.float32), origin, cell, X, Y
+
+
+ROUTE2 = np.array([[-15.0, 0.0], [15.0, 0.0]])
+
+
+def test_route_smoothing_flat_slope_kept_far_unchanged():
+    z, origin, cell, X, Y = make_bumpy_grid()
+    out = p.smooth_route_ground(z, origin, cell, ROUTE2, radius=3.0, blend=2.0, median=1.5, sigma=1.0)
+    d = np.abs(Y)                                  # 経路(y=0)までの距離 (x∈[-15,15])
+    inner = (d <= 2.5) & (np.abs(X) <= 10)
+    assert np.abs(out - _plane(X, Y))[inner].max() <= 0.01
+    # 傾斜(roll/pitch)が保たれる: 平面フィットの傾斜角 ±0.2°
+    A = np.c_[X[inner], Y[inner], np.ones(inner.sum())]
+    cf, *_ = np.linalg.lstsq(A, out[inner].astype(float), rcond=None)
+    ang = np.degrees(np.arctan(np.hypot(cf[0], cf[1])))
+    ang0 = np.degrees(np.arctan(np.hypot(0.05, 0.02)))
+    assert abs(ang - ang0) <= 0.2
+    # 経路から 6m 以上離れた場所は不変
+    far = (d >= 6.0)
+    assert np.array_equal(out[far], z[far])
+
+
+def test_route_smoothing_disabled_when_radius_none():
+    z, origin, cell, X, Y = make_bumpy_grid()
+    out = p.smooth_route_ground(z, origin, cell, ROUTE2, radius=None, blend=2.0, median=1.5, sigma=1.0)
+    assert np.array_equal(out, z)
+
+
+def test_pipeline_route_smoothing_terrain(tmp_path):
+    rng = np.random.default_rng(51)
+    g = np.arange(-20, 20, 0.05)
+    X, Y = np.meshgrid(g, g)
+    Z = _plane(X, Y) + 0.075 * np.sin(2 * np.pi * X / 2.0) + rng.normal(0, 0.002, X.shape)
+    pts = np.c_[X.ravel(), Y.ravel(), Z.ravel()].astype(np.float32)
+    outs = {}
+    for tag, cfg in (("smooth", p.Config(route_smooth_radius=3.0)), ("raw", p.Config(route_smooth_radius=None))):
+        o = tmp_path / tag
+        p.run_pipeline(lambda: iter([pts]), str(o), cfg, log=lambda *a: None, route_path=ROUTE2)
+        outs[tag] = read_obj(str(o / "meshes" / "terrain.obj"))[0]
+    v = outs["smooth"]
+    inner = (np.abs(v[:, 1]) <= 2.5) & (np.abs(v[:, 0]) <= 10)
+    assert inner.sum() > 100
+    A = np.c_[v[inner, 0], v[inner, 1], np.ones(inner.sum())]
+    cf, *_ = np.linalg.lstsq(A, v[inner, 2], rcond=None)
+    assert np.abs(A @ cf - v[inner, 2]).max() <= 0.01          # 平面からの残差 1cm 以下 (絶対高さのバイアスは地面推定器の性質)
+    assert abs(np.degrees(np.arctan(np.hypot(cf[0], cf[1]))) - np.degrees(np.arctan(np.hypot(0.05, 0.02)))) <= 0.2
+    r = outs["raw"]
+    far = np.abs(r[:, 1]) >= 6.5
+    key = lambda a: {(round(x, 3), round(y, 3)): z for x, y, z in a}
+    ks, kr = key(v), key(r)
+    com = [k for k in kr if abs(k[1]) >= 6.5 and k in ks]
+    assert len(com) > 100
+    assert max(abs(ks[k] - kr[k]) for k in com) < 1e-3

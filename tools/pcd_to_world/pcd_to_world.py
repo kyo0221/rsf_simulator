@@ -3,6 +3,8 @@
 
 出力: <out>/model.config, model.sdf, meshes/{terrain,structures,structures_collision}.obj
 座標は map(=Gazebo world) 座標系でそのまま書き出す(モデル姿勢は原点)。
+map = 点群座標(公式原点中心の局所 ENU、z は標高)そのもの(恒等)。georef は
+rsf_navigation_executor/config/tsukuba_georef.yaml。
 
 実行例は README 相当として末尾の main() / --help を参照。
 """
@@ -10,136 +12,10 @@ import argparse
 import os
 import resource
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
-
-# ---------------------------------------------------------------- 座標変換
-@dataclass
-class GeoParams:
-    gth: float = -2.3500858378103646   # rsf_slam/config/tsukuba_georef.yaml enu_to_map
-    gtx: float = 156.89610202453204
-    gty: float = 64.64302275894745
-    lat0: float = 36.083470500000004
-    lon0: float = 140.07630341666666
-    oe: float = 21903.53               # 点群ローカル -> 平面直角(EPSG:6677) オフセット (spherical で nav 地図と照合して推定)
-    on: float = 9223.57
-    zoff: float = -24.775              # map_z = z + zoff
-    epsg: str = "EPSG:6677"
-    model: str = "enu_origin_spherical"  # enu_origin_spherical(既定): 点群=原点中心の局所ENU / spherical: 平面直角+オフセット+球近似 / ellipsoid: 平面直角+オフセット+ortho
-    origin_lat: float = 36.082880      # 点群の水平原点(JGD2024) 出典: raucha/tc-datasets add-map (TC2026 ISE Robotics GNSS map data)
-    origin_lon: float = 140.076545
-    earth_radius: float = 6378137.0
-
-
-_TR_CACHE = {}
-
-
-def _transformers(g):
-    key = (g.lat0, g.lon0, g.epsg)
-    if key not in _TR_CACHE:
-        from pyproj import Transformer
-        inv = Transformer.from_crs(g.epsg, "EPSG:4326", always_xy=True)
-        enu = Transformer.from_crs(
-            "EPSG:4326", f"+proj=ortho +lat_0={g.lat0} +lon_0={g.lon0} +ellps=GRS80",
-            always_xy=True)
-        _TR_CACHE[key] = (inv, enu)
-    return _TR_CACHE[key]
-
-
-_ORIGIN_CACHE = {}
-
-
-def _origin_inv(g):
-    key = (g.origin_lat, g.origin_lon)
-    if key not in _ORIGIN_CACHE:
-        from pyproj import Transformer
-        _ORIGIN_CACHE[key] = Transformer.from_crs(
-            f"+proj=ortho +lat_0={g.origin_lat} +lon_0={g.origin_lon} +ellps=GRS80", "EPSG:4326",
-            always_xy=True)
-    return _ORIGIN_CACHE[key]
-
-
-def cloud2latlon(x, y, g=None):
-    """点群ローカル座標 -> 緯度経度 (pyproj, EPSG:6677 -> 4326)。"""
-    g = g or GeoParams()
-    if g.model == "enu_origin_spherical":
-        lon, lat = _origin_inv(g).transform(np.asarray(x, float), np.asarray(y, float))
-        return np.asarray(lat), np.asarray(lon)
-    inv, _ = _transformers(g)
-    lon, lat = inv.transform(np.asarray(x, float) + g.oe, np.asarray(y, float) + g.on)
-    return np.asarray(lat), np.asarray(lon)
-
-
-def _enu_to_map(e, n, g):
-    c, s = np.cos(g.gth), np.sin(g.gth)
-    return c * e - s * n + g.gtx, s * e + c * n + g.gty
-
-
-def latlon_to_map(lat, lon, g=None):
-    """GNSS 緯度経度 -> map。プロジェクトの球近似式 (enu_from_latlon) + georef の enu_to_map。"""
-    g = g or GeoParams()
-    lat, lon = np.asarray(lat, float), np.asarray(lon, float)
-    e = np.radians(lon - g.lon0) * np.cos(np.radians(g.lat0)) * g.earth_radius
-    n = np.radians(lat - g.lat0) * g.earth_radius
-    return _enu_to_map(e, n, g)
-
-
-def map_to_latlon(mx, my, g=None):
-    """map -> 緯度経度。rsf_device_emulator.latlon() と同じ式(ノイズ無し)。"""
-    g = g or GeoParams()
-    c, s = np.cos(g.gth), np.sin(g.gth)
-    dx, dy = np.asarray(mx, float) - g.gtx, np.asarray(my, float) - g.gty
-    e, n = c * dx + s * dy, -s * dx + c * dy
-    lat = g.lat0 + np.degrees(n / g.earth_radius)
-    lon = g.lon0 + np.degrees(e / (g.earth_radius * np.cos(np.radians(g.lat0))))
-    return lat, lon
-
-
-def cloud2map_exact(x, y, g=None):
-    """点群ローカル -> map の厳密変換 (遅いので検証/アフィンフィット用)。
-    model=enu_origin_spherical(既定): 点群=(origin_lat, origin_lon) 中心の局所 ENU -> ortho 逆で緯度経度 -> 球近似 ENU -> enu_to_map。
-    model=spherical: 6677 -> 緯度経度(pyproj) -> 球近似 ENU -> enu_to_map (プロジェクト定義)。
-    model=ellipsoid: 6677 -> 緯度経度 -> +proj=ortho(楕円体) ENU -> enu_to_map。"""
-    g = g or GeoParams()
-    lat, lon = cloud2latlon(x, y, g)
-    if g.model in ("spherical", "enu_origin_spherical"):
-        return latlon_to_map(lat, lon, g)
-    _, enu = _transformers(g)
-    e, n = enu.transform(lon, lat)
-    return _enu_to_map(e, n, g)
-
-
-@dataclass
-class Affine:
-    A: np.ndarray
-    t: np.ndarray
-    max_residual: float = 0.0
-
-    def apply(self, x, y):
-        x = np.asarray(x, np.float64)
-        y = np.asarray(y, np.float64)
-        return (self.A[0, 0] * x + self.A[0, 1] * y + self.t[0],
-                self.A[1, 0] * x + self.A[1, 1] * y + self.t[1])
-
-
-def fit_affine(xmin, xmax, ymin, ymax, step=10.0, g=None):
-    """範囲内の格子点で cloud2map_exact を 2D アフィンに最小二乗フィット。"""
-    g = g or GeoParams()
-    xs = np.arange(xmin, xmax + step, step)
-    ys = np.arange(ymin, ymax + step, step)
-    X, Y = np.meshgrid(xs, ys)
-    X, Y = X.ravel(), Y.ravel()
-    MX, MY = cloud2map_exact(X, Y, g)
-    D = np.c_[X, Y, np.ones_like(X)]
-    cx, *_ = np.linalg.lstsq(D, MX, rcond=None)
-    cy, *_ = np.linalg.lstsq(D, MY, rcond=None)
-    A = np.array([[cx[0], cx[1]], [cy[0], cy[1]]])
-    t = np.array([cx[2], cy[2]])
-    res = np.hypot(D @ cx - MX, D @ cy - MY).max()
-    return Affine(A, t, float(res))
-
 
 # ---------------------------------------------------------------- 設定
 @dataclass
@@ -159,6 +35,10 @@ class Config:
     structures_tris: int = 4_000_000   # 上限目安: 超えたらボクセルを voxel_coarse に上げる(間引きはしない)
     collision_tris: int = 1_000_000    # 目安(超過してもエラーにはしない)
     voxel_coarse: float = 0.15
+    route_smooth_radius: Optional[float] = 3.0   # 経路から何 m 以内の地面グリッドを平滑化するか(None=しない)
+    route_smooth_blend: float = 2.0              # 外側へ元の高さに線形ブレンドする幅[m]
+    route_smooth_median: float = 2.0             # 外れ値除去のメディアン窓[m] (1.5 では経路上の p99 残差が 3cm 残るため 2.0)
+    route_smooth_sigma: float = 2.0              # ガウシアン σ[m] (1.0 では 3cm 残るため 2.0)
     collision_route_radius: Optional[float] = 10.0          # structures_collision を経路から何 m 以内の柱に絞るか(None=全域)
     terrain_collision_route_radius: Optional[float] = 20.0  # terrain_collision.obj を経路から何 m 以内の三角形に絞るか(None=全域)
     clear_radius: float = 1.0      # 経路折れ線からの水平距離[m]
@@ -358,6 +238,58 @@ def polyline_distance(P, poly):
     return d
 
 
+def near_route(xy, route, radius, origin, shape, cell):
+    """xy(N,2) の各点が経路から radius 以内か。セルマスクで粗く絞ってから厳密距離。"""
+    ny, nx = shape
+    pm = path_cell_mask(route, origin, shape, cell, radius + 2 * cell)
+    ix = np.clip(np.floor((xy[:, 0] - origin[0]) / cell).astype(np.int64), 0, nx - 1)
+    iy = np.clip(np.floor((xy[:, 1] - origin[1]) / cell).astype(np.int64), 0, ny - 1)
+    idx = np.flatnonzero(pm[iy, ix])
+    out = np.zeros(len(xy), bool)
+    if len(idx):
+        out[idx] = polyline_distance(xy[idx], route) <= radius
+    return out
+
+
+def smooth_route_ground(ground, origin, cell, route, radius, blend, median, sigma):
+    """経路から radius 以内の地面グリッドを平滑化し、外側 blend[m] は元の高さへ線形にブレンドする。
+    外れ値(植生・物体の誤認)をメディアンで除いてからガウシアンで滑らかな面にする(平面成分=傾斜は保たれる)。"""
+    if radius is None or route is None:
+        return ground
+    from scipy import ndimage as ndi
+    ny, nx = ground.shape
+    outer = radius + blend
+    pm = path_cell_mask(route, origin, (ny, nx), cell, outer + cell)
+    if not pm.any():
+        return ground
+    k = int(median / cell)
+    k = max(k, 1) | 1
+    sg = sigma / cell
+    marg = k // 2 + int(np.ceil(4 * sg)) + 2
+    out = ground.copy()
+    B = 128
+    for by in range(0, ny, B):
+        for bx in range(0, nx, B):
+            blk = pm[by:by + B, bx:bx + B]
+            if not blk.any():
+                continue
+            y0, y1 = max(by - marg, 0), min(by + B + marg, ny)
+            x0, x1 = max(bx - marg, 0), min(bx + B + marg, nx)
+            crop = ground[y0:y1, x0:x1].astype(np.float64)
+            sm = ndi.gaussian_filter(ndi.median_filter(crop, size=k, mode="nearest"), sg, mode="nearest")
+            sl = (slice(by - y0, by - y0 + blk.shape[0]), slice(bx - x0, bx - x0 + blk.shape[1]))
+            cy, cx = np.nonzero(blk)
+            gy, gx = cy + by, cx + bx
+            xy = np.c_[origin[0] + (gx + 0.5) * cell, origin[1] + (gy + 0.5) * cell]
+            d = polyline_distance(xy, route)
+            w = np.clip((outer - d) / blend, 0.0, 1.0) if blend > 0 else (d <= outer).astype(float)
+            base = ground[gy, gx].astype(np.float64)
+            val = sm[sl][cy, cx]
+            new = np.where(w > 0, base + w * (val - base), base)
+            out[gy, gx] = new.astype(ground.dtype)
+    return out
+
+
 def parse_zone(txt):
     v = tuple(float(t) for t in txt.split(","))
     if len(v) != 6:
@@ -528,31 +460,17 @@ def terrain_mesh(gr, origin, cell):
     return verts.astype(np.float64), faces.astype(np.int64)
 
 
-def decimate_mesh(verts, faces, target, agg=5, method="fast"):
-    """QEM による間引き。fast_simplification を優先(高速・確実に目標へ到達)、無ければ open3d。
-    open3d は非多様体部で止まり予算に届かないことがあったため構造物では fast を使う。
-    ただし fast は開境界を保存せず地形(境界あり)で大きく崩れるため、地形は method="open3d"。"""
+def decimate_mesh(verts, faces, target):
+    """open3d の quadric decimation で target 三角形以下へ間引く(地形用。開境界が保たれる)。"""
     if len(faces) <= target:
         return np.asarray(verts), np.asarray(faces)
-    try:
-        if method != "fast":
-            raise ImportError
-        import fast_simplification as fs
-        v = np.asarray(verts, np.float32)
-        f = np.asarray(faces, np.int32)
-        for _ in range(4):
-            v, f = fs.simplify(v, f, target_count=int(target), agg=agg)
-            if len(f) <= target:
-                break
-        return np.asarray(v, np.float64), np.asarray(f, np.int64)
-    except ImportError:
-        import open3d as o3d
-        m = o3d.geometry.TriangleMesh()
-        m.vertices = o3d.utility.Vector3dVector(np.asarray(verts, np.float64))
-        m.triangles = o3d.utility.Vector3iVector(np.asarray(faces, np.int32))
-        m = m.simplify_quadric_decimation(target_number_of_triangles=int(target))
-        m.remove_unreferenced_vertices()
-        return np.asarray(m.vertices), np.asarray(m.triangles)
+    import open3d as o3d
+    m = o3d.geometry.TriangleMesh()
+    m.vertices = o3d.utility.Vector3dVector(np.asarray(verts, np.float64))
+    m.triangles = o3d.utility.Vector3iVector(np.asarray(faces, np.int32))
+    m = m.simplify_quadric_decimation(target_number_of_triangles=int(target))
+    m.remove_unreferenced_vertices()
+    return np.asarray(m.vertices), np.asarray(m.triangles)
 
 
 def mesh_heights(verts, faces, x, y, z0=1000.0):
@@ -696,6 +614,8 @@ def tiled_voxel_mesh(ijk, voxel, origin, max_voxels=3_500_000, log=print):
     """ボクセルを i 方向のスラブに分割して greedy meshing し連結する(メモリ節約、間引きなし)。
     露出判定は隣接スラブのボクセルも参照するので、境界で面の欠け/重複は無い
     (長方形の結合がスラブ境界で切れるだけ)。"""
+    if len(ijk) == 0:
+        return np.zeros((0, 3)), np.zeros((0, 3), np.int64)
     ijk = ijk[np.argsort(ijk[:, 0], kind="stable")]
     ii = ijk[:, 0]
     cuts = [0]
@@ -817,6 +737,12 @@ def run_pipeline(factory, outdir, cfg=None, log=print, probes=(), cache=None, du
     cellmin = cellrob
     stats["points"] = npts
     gr = estimate_ground(cellmin, cfg)
+    if route_path is not None and cfg.route_smooth_radius is not None:
+        g0 = gr.ground
+        gr.ground = smooth_route_ground(g0, origin, cfg.cell, route_path, cfg.route_smooth_radius,
+                                        cfg.route_smooth_blend, cfg.route_smooth_median, cfg.route_smooth_sigma)
+        L(f"route smoothing: radius {cfg.route_smooth_radius}m blend {cfg.route_smooth_blend}m, max change {float(np.abs(gr.ground - g0).max()):.3f}m")
+        del g0
     L(f"ground cells={int(gr.is_ground.sum())} valid={int(gr.valid.sum())}")
     stats["ground_cells"] = int(gr.is_ground.sum())
     if dump_ground:
@@ -826,7 +752,7 @@ def run_pipeline(factory, outdir, cfg=None, log=print, probes=(), cache=None, du
     # 地形メッシュ
     verts, faces = terrain_mesh(gr, origin, cfg.cell)
     L(f"terrain full: verts={len(verts)} tris={len(faces)}")
-    dv, df = decimate_mesh(verts, faces, cfg.terrain_tris, method="open3d")
+    dv, df = decimate_mesh(verts, faces, cfg.terrain_tris)
     L(f"terrain decimated tris={len(df)}")
     hz = mesh_heights(dv, df, verts[:, 0], verts[:, 1])
     err = np.abs(hz - verts[:, 2])
@@ -838,6 +764,13 @@ def run_pipeline(factory, outdir, cfg=None, log=print, probes=(), cache=None, du
     L(f"terrain vertical err max={stats['terrain_max_err']:.3f} p99={stats['terrain_p99_err']:.3f} "
       f"p50={stats['terrain_p50_err']:.4f} miss={stats['terrain_miss']}")
     stats["terrain_tris"] = len(df)
+    if route_path is not None:
+        nr = near_route(verts[:, :2], route_path, cfg.route_smooth_radius or 3.0, origin, shape, cfg.cell)
+        ef = err[nr & fin]
+        if len(ef):
+            stats["terrain_route_err_max"] = float(ef.max())
+            stats["terrain_route_err_p99"] = float(np.percentile(ef, 99))
+            L(f"terrain vertical err within route: max={ef.max():.4f} p99={np.percentile(ef, 99):.4f} n={len(ef)}")
     mdir = os.path.join(outdir, "meshes")
     write_obj(os.path.join(mdir, "terrain.obj"), dv, df)
     # terrain collision: デシメート済み三角形のうち、重心が経路から半径以内のものだけ(同一三角形、再デシメートなし)
@@ -1102,7 +1035,7 @@ def write_model_files(outdir):
 
 
 # ---------------------------------------------------------------- PCD 入力
-def pcd_chunks_factory(path, aff, zoff, chunk, stride=1):
+def pcd_chunks_factory(path, chunk, stride=1):
     with open(path, "rb") as f:
         off = 0
         npts = 0
@@ -1123,8 +1056,7 @@ def pcd_chunks_factory(path, aff, zoff, chunk, stride=1):
             y = np.asarray(blk["y"], np.float64)
             z = np.asarray(blk["z"], np.float64)
             ok = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
-            mx, my = aff.apply(x[ok], y[ok])
-            yield np.c_[mx, my, z[ok] + zoff].astype(np.float32)
+            yield np.c_[x[ok], y[ok], z[ok]].astype(np.float32)
     return factory, npts, mm
 
 
@@ -1134,12 +1066,6 @@ def main():
     ap.add_argument("--pcd", default="/home/kyo/Downloads/tsukuba_map/cleaned_dense_2p5cm_tsukuba_jgd2024_intensity.pcd")
     ap.add_argument("--out", default=os.path.normpath(os.path.join(here, "..", "..", "models", "tsukuba")))
     ap.add_argument("--stride", type=int, default=1, help="点の間引き(開発用)")
-    ap.add_argument("--geo-model", choices=["enu_origin_spherical", "spherical", "ellipsoid"], default="enu_origin_spherical")
-    ap.add_argument("--origin-lat", type=float, default=GeoParams.origin_lat)
-    ap.add_argument("--origin-lon", type=float, default=GeoParams.origin_lon)
-    ap.add_argument("--oe", type=float, default=GeoParams.oe)
-    ap.add_argument("--on", type=float, default=GeoParams.on)
-    ap.add_argument("--zoff", type=float, default=GeoParams.zoff)
     ap.add_argument("--cache", default=None, help="セル最小zのキャッシュ(.npz)。開発用")
     ap.add_argument("--dump-ground", default=None)
     ap.add_argument("--clear-waypoints", default="/home/kyo/rsf_ws/src/rsf_waypoint_manager/waypoints/tsukuba_wp.yaml",
@@ -1151,32 +1077,22 @@ def main():
     ap.add_argument("--box-overrides-file", default=os.path.join(here, "box_overrides.yaml"),
                     help="実寸直方体への置換 yaml (存在すれば読む。'none' で無効)")
     ap.add_argument("--probe", action="append", default=[], help="x,y の地形高さを表示 (複数可)")
+    NONE_OK = ("collision_route_radius", "terrain_collision_route_radius", "route_smooth_radius")
+
     def float_or_none(t):
         return None if str(t).lower() == "none" else float(t)
     for k, v in Config().__dict__.items():
-        ap.add_argument("--" + k.replace("_", "-"), type=float_or_none if k.endswith("route_radius") else type(v),
-                        default=v, help="none で無効(全域)" if k.endswith("route_radius") else None)
+        ap.add_argument("--" + k.replace("_", "-"), type=float_or_none if k in NONE_OK else type(v),
+                        default=v, help="none で無効" if k in NONE_OK else None)
     a = ap.parse_args()
     cfg = Config(**{k: getattr(a, k) for k in Config().__dict__})
-    g = GeoParams(oe=a.oe, on=a.on, zoff=a.zoff, model=a.geo_model, origin_lat=a.origin_lat,
-                  origin_lon=a.origin_lon)
-
-    # 点群ローカル範囲 (先頭ヘッダ後を memmap で走査)
-    factory0, npts, mm = pcd_chunks_factory(a.pcd, Affine(np.eye(2), np.zeros(2)), 0.0, cfg.chunk, 1)
-    xmn = xmx = ymn = ymx = None
-    xs = np.asarray(mm["x"][::50]); ys = np.asarray(mm["y"][::50])
-    xmn, xmx, ymn, ymx = float(xs.min()), float(xs.max()), float(ys.min()), float(ys.max())
-    del mm
-    aff = fit_affine(xmn - 20, xmx + 20, ymn - 20, ymx + 20, 10.0, g)
-    print(f"local range x[{xmn:.1f},{xmx:.1f}] y[{ymn:.1f},{ymx:.1f}]  affine A={aff.A.tolist()} "
-          f"t={aff.t.tolist()} max_residual={aff.max_residual:.2e} m")
-    factory, npts, mm = pcd_chunks_factory(a.pcd, aff, g.zoff, cfg.chunk, a.stride)
+    factory, npts, mm = pcd_chunks_factory(a.pcd, cfg.chunk, a.stride)
     probes = [tuple(float(t) for t in s.split(",")) for s in a.probe]
     clear_path = None
     if a.clear_waypoints.lower() != "none":
         import yaml
         wp = yaml.safe_load(open(a.clear_waypoints))["waypoints"]
-        clear_path = np.array([[70.571, 71.831]] + [[w["x"], w["y"]] for w in wp], float)
+        clear_path = np.array([[w["x"], w["y"]] for w in wp], float)   # 先頭点 = スポーン(新しい始点)
         print(f"clear path: {len(clear_path)} points, radius={cfg.clear_radius} max_h={cfg.clear_max_h}")
     zones = []
     if a.clear_zones_file.lower() != "none" and os.path.exists(a.clear_zones_file):

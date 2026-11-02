@@ -14,7 +14,7 @@
         <scene>scene</scene>
         <ambient_light>0.4 0.4 0.4</ambient_light>
         <background_color>0.8 0.8 0.8</background_color>
-        <camera_pose>60.86 64.78 8.05 0 0.55 0.628</camera_pose>
+        <camera_pose>36.77 2.39 33.00 0 0.55 3.065</camera_pose>
       </plugin>
 
       <plugin filename="GzSceneManager" name="Scene Manager">
@@ -128,11 +128,12 @@
 
     <include>
       <uri>model://orne_boxF</uri>
-      <pose>70.571 71.831 0.050 0 0 0.6284</pose>
+      <pose>24.808 3.303 25.049 0 0 3.065</pose>
     </include>
 
     <!-- つくば高精度点群地図(JGD2024, 2.5cm)から tools/pcd_to_world で生成。
-         GNSS georef (rsf_slam/config/tsukuba_georef.yaml) で map 座標に配置済み -->
+         map = 点群座標(公式原点 36.082880N,140.076545E 中心の局所 ENU、z は標高そのもの)。恒等変換で配置済み。
+         スポーン = 新 waypoint の始点 (24.808, 3.303, yaw 3.065)、z = 地形高さ 24.999 + 0.05 -->
     <include>
       <uri>model://tsukuba</uri>
       <pose>0 0 0 0 0 0</pose>
@@ -143,12 +144,14 @@
     <atmosphere type="adiabatic"/>
     <wind/>
     <spherical_coordinates>
+      <!-- 原点 = rsf_navigation_executor/config/tsukuba_georef.yaml の map_origin。map は ENU(東=+x, 北=+y)なので heading 0。
+           elevation = 原点 altitude(41.1224): Gazebo の NavSat 高度 = map z + 41.1224 -->
       <surface_model>EARTH_WGS84</surface_model>
       <world_frame_orientation>ENU</world_frame_orientation>
-      <latitude_deg>36.082877536</latitude_deg>
-      <longitude_deg>140.078040399</longitude_deg>
-      <elevation>65.563</elevation>
-      <heading_deg>134.7000</heading_deg>
+      <latitude_deg>36.08288044139598</latitude_deg>
+      <longitude_deg>140.07654638977903</longitude_deg>
+      <elevation>41.1224</elevation>
+      <heading_deg>0</heading_deg>
     </spherical_coordinates>
   </world>
 </sdf>
