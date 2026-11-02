@@ -35,6 +35,15 @@ class Config:
     structures_tris: int = 4_000_000   # 上限目安: 超えたらボクセルを voxel_coarse に上げる(間引きはしない)
     collision_tris: int = 1_000_000    # 目安(超過してもエラーにはしない)
     voxel_coarse: float = 0.15
+    pole_route_radius: Optional[float] = 5.0   # 経路から何 m 以内の細い柱状物を実寸直方体に置換するか(None=しない)
+    pole_max_size: float = 0.6                 # 柱状物とみなす水平長軸の上限[m]
+    pole_min_size: float = 0.05                # 直方体の最小サイズ[m]
+    pole_hmin: float = 0.2                     # 検出に使う点の h 下限[m]
+    pole_hmax: float = 1.5                     # 水平連結成分に使う h 上限[m]
+    pole_min_points: int = 100                 # 成分の最小点数
+    pole_cont_frac: float = 0.7                # h 0.2〜1.0 の 0.1m ビン(各 3 点以上)のうち点のある割合の下限
+    pole_min_top: float = 0.6                  # 上端 h の下限[m](実データの歩行者ポールは高さ約 0.9m)
+    pole_margin: float = 0.05                  # 置換時のボクセル除去マージン[m](+ボクセル対角の半分)
     route_smooth_radius: Optional[float] = 3.0   # 経路から何 m 以内の地面グリッドを平滑化するか(None=しない)
     route_smooth_blend: float = 2.0              # 外側へ元の高さに線形ブレンドする幅[m]
     route_smooth_median: float = 2.0             # 外れ値除去のメディアン窓[m] (1.5 では経路上の p99 残差が 3cm 残るため 2.0)
@@ -49,13 +58,11 @@ class Config:
     hcol_min: float = 0.15
     col_bottom: float = 0.05       # collision 柱の下端(地形より下)
     vz_col: float = 0.1            # collision 柱の高さ量子化
-    col_isolated_count: int = 10   # 孤立セルをノイズとして除く点数しきい値
     hmin: float = 0.10
     hmax: float = 15.0
     hcol_max: float = 1.2
     voxel: float = 0.1
     min_count: int = 3
-    min_count_col: int = 3
     chunk: int = 4_000_000
 
 
@@ -288,6 +295,116 @@ def smooth_route_ground(ground, origin, cell, route, radius, blend, median, sigm
             new = np.where(w > 0, base + w * (val - base), base)
             out[gy, gx] = new.astype(ground.dtype)
     return out
+
+
+def detect_poles(factory, gr, origin, shape, cfg, route_path, log=print):
+    """経路から pole_route_radius 以内の細い柱状物(水平長軸 <= pole_max_size、鉛直に連続)を点群から検出し、
+    PCA と 2〜98 パーセンタイル幅で実寸の向き付き直方体(box_overrides 形式の dict)を返す。
+    樹冠・壁・横に広がる頭部を持つものは対象外(迷うものは除外)。"""
+    from scipy import ndimage as ndi
+    ny, nx = shape
+    cell = cfg.cell
+    pm = path_cell_mask(route_path, origin, shape, cell, cfg.pole_route_radius)
+    chunks = []
+    for pts in factory():
+        ix = np.floor((pts[:, 0] - origin[0]) / cell).astype(np.int64)
+        iy = np.floor((pts[:, 1] - origin[1]) / cell).astype(np.int64)
+        ok = (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny)
+        pts, ix, iy = pts[ok], ix[ok], iy[ok]
+        ok = pm[iy, ix] & gr.valid[iy, ix]
+        pts, ix, iy = pts[ok], ix[ok], iy[ok]
+        h = pts[:, 2] - gr.ground[iy, ix]
+        k = (h >= cfg.pole_hmin) & (h <= cfg.hmax)
+        if k.any():
+            chunks.append(np.c_[pts[k, 0], pts[k, 1], h[k]].astype(np.float32))
+    if not chunks:
+        return []
+    P = np.concatenate(chunks)
+    del chunks
+    lowm = P[:, 2] <= cfg.pole_hmax
+    Q = P[lowm]
+    g = 0.05
+    x0, y0 = float(Q[:, 0].min()) - 0.2, float(Q[:, 1].min()) - 0.2
+    gi = np.floor((Q[:, 0] - x0) / g).astype(np.int64)
+    gj = np.floor((Q[:, 1] - y0) / g).astype(np.int64)
+    occ = np.zeros((gj.max() + 3, gi.max() + 3), bool)
+    occ[gj + 1, gi + 1] = True
+    occ = ndi.binary_dilation(occ, structure=np.ones((3, 3), bool))
+    lab, nl = ndi.label(occ, structure=np.ones((3, 3), bool))
+    del occ
+    ql = lab[gj + 1, gi + 1]
+    del lab
+    order = np.argsort(ql, kind="stable")
+    ql = ql[order]
+    Q = Q[order]
+    starts = np.flatnonzero(np.r_[True, ql[1:] != ql[:-1]])
+    ends = np.r_[starts[1:], len(ql)]
+    Pord = np.argsort(P[:, 0], kind="stable")
+    Px = P[Pord, 0]
+    boxes = []
+    rej = {}
+
+    def reject(k):
+        rej[k] = rej.get(k, 0) + 1
+    for a, b in zip(starts, ends):
+        if b - a < cfg.pole_min_points:
+            reject('few_points')
+            continue
+        c = Q[a:b]
+        xy = c[:, :2].astype(np.float64)
+        if np.ptp(xy[:, 0]) > cfg.pole_max_size * 1.6 + 0.2 or np.ptp(xy[:, 1]) > cfg.pole_max_size * 1.6 + 0.2:
+            reject('bbox')
+            continue
+        mu = xy.mean(axis=0)
+        ev, evec = np.linalg.eigh(np.cov((xy - mu).T))
+        ax = evec[:, 1]
+        u = (xy - mu) @ ax
+        w = (xy - mu) @ evec[:, 0]
+        ul, uh = np.percentile(u, [2, 98])
+        wl, wh = np.percentile(w, [2, 98])
+        L_, W_ = uh - ul, wh - wl
+        if L_ > cfg.pole_max_size:
+            reject('long_axis')
+            continue
+        hh = c[:, 2]
+        if hh.max() < cfg.pole_min_top:
+            reject('low')
+            continue
+        cnt, _ = np.histogram(hh, bins=np.arange(cfg.pole_hmin, 1.0 + 1e-9, 0.1))
+        if (cnt >= 3).mean() < cfg.pole_cont_frac:
+            reject('not_continuous')
+            continue
+        cen = mu + ax * (ul + uh) / 2 + evec[:, 0] * (wl + wh) / 2
+        yaw = float(np.degrees(np.arctan2(ax[1], ax[0])))
+        sx, sy = max(L_, cfg.pole_min_size), max(W_, cfg.pole_min_size)
+        # 真上で連続する上端と、樹冠・壁・頭部の有無(上部で横に広がるものは対象外)
+        r = max(sx, sy) / 2 + 0.6
+        i0, i1 = np.searchsorted(Px, [cen[0] - r, cen[0] + r])
+        nb = P[Pord[i0:i1]]
+        nb = nb[(np.abs(nb[:, 1] - cen[1]) <= r)]
+        cth, sth = np.cos(np.radians(yaw)), np.sin(np.radians(yaw))
+        du, dv = nb[:, 0] - cen[0], nb[:, 1] - cen[1]
+        lu, lv = cth * du + sth * dv, -sth * du + cth * dv
+        inside = (np.abs(lu) <= sx / 2 + 0.05) & (np.abs(lv) <= sy / 2 + 0.05)
+        ring = (np.abs(lu) <= sx / 2 + 0.4) & (np.abs(lv) <= sy / 2 + 0.4) & ~inside
+        hin = np.sort(nb[inside, 2])
+        bins = np.floor((hin - cfg.pole_hmin) / 0.1).astype(np.int64)
+        occb = np.unique(bins)
+        gaps = np.flatnonzero(np.diff(occb) > 2)
+        last = occb[gaps[0]] if len(gaps) else occb[-1]
+        top_pts = hin[bins <= last]
+        top = float(np.percentile(top_pts, 99.5))
+        if top < cfg.pole_min_top:
+            reject('top')
+            continue
+        hr = nb[ring, 2]
+        if ((hr > cfg.pole_hmax) & (hr <= top)).sum() > 0.5 * ((top_pts > cfg.pole_hmax).sum()) + 50:
+            reject('widening')
+            continue
+        boxes.append(dict(center_x=float(cen[0]), center_y=float(cen[1]), yaw_deg=yaw, size_x=float(sx),
+                          size_y=float(sy), z_bottom_h=0.0, z_top_h=top, margin=cfg.pole_margin, auto=True))
+    log(f"poles: {len(boxes)} detected within {cfg.pole_route_radius}m of route; rejected {rej}")
+    return boxes
 
 
 def parse_zone(txt):
@@ -677,7 +794,11 @@ def write_obj(path, verts, faces, normals="vertex", block=500_000):
                 L[bad] = 1.0
                 nn[i:i + block] = np.rint(cr / L[:, None] * 10000).astype(np.int32)
             key = ((nn[:, 0].astype(np.int64) + 10001) * 20003 + (nn[:, 1] + 10001)) * 20003 + (nn[:, 2] + 10001)
-            uk, inv = np.unique(key, return_inverse=True)
+            uk, inv, cnts = np.unique(key, return_inverse=True, return_counts=True)
+            ordr = np.argsort(-cnts, kind="stable")        # 頻出の法線を小さい番号にして f 行を短くする
+            rank = np.empty(len(uk), np.int64)
+            rank[ordr] = np.arange(len(uk))
+            uk, inv = uk[ordr], rank[inv]
             z = uk % 20003 - 10001
             y = (uk // 20003) % 20003 - 10001
             x = uk // (20003 * 20003) - 10001
@@ -800,18 +921,28 @@ def run_pipeline(factory, outdir, cfg=None, log=print, probes=(), cache=None, du
     zref = float(np.floor(gr.ground.min())) - 1.0
     zmax = float(max(mx[2], gr.ground.max()) + 1.0)
     vz = cfg.vz_col
-    Dc = (nx + 2, ny + 2, int(np.ceil((zmax - zref) / vz)) + 2)
-    acc_col = VoxelAccumulator()
     regions = []   # (polyline, radius, max_h): 最終ボクセル/柱で判定する除去領域
     if clear_path is not None:
         regions.append((np.asarray(clear_path, float), cfg.clear_radius, cfg.clear_max_h))
     for (x1, y1, x2, y2, rad, mh) in clear_zones:
         regions.append((np.array([[x1, y1], [x2, y2]]), rad, mh))
+    stats["poles_replaced"] = 0
+    if route_path is not None and cfg.pole_route_radius is not None:
+        auto = detect_poles(factory, gr, origin, shape, cfg, route_path, log=L)
+        auto = [b for b in auto
+                if not any(in_box_footprint(np.array([b["center_x"]]), np.array([b["center_y"]]), m, m["margin"])[0]
+                           for m in box_overrides)]
+        stats["poles_replaced"] = len(auto)
+        stats["pole_boxes"] = auto
+        if auto:
+            sz = np.array([[b["size_x"], b["size_y"], b["z_top_h"]] for b in auto])
+            L(f"poles replaced={len(auto)} (manual overrides take priority); size_x p50={np.median(sz[:,0]):.2f} size_y p50={np.median(sz[:,1]):.2f} top p50={np.median(sz[:,2]):.2f}")
+        box_overrides = list(box_overrides) + auto
     fine_sizes = [cfg.voxel, cfg.voxel_coarse]
     fine_idx = 0
     mdir = os.path.join(outdir, "meshes")
 
-    def accumulate(vfine, do_col):
+    def accumulate(vfine):
         Df = (int(np.ceil(nx * cfg.cell / vfine)) + 2, int(np.ceil(ny * cfg.cell / vfine)) + 2,
               int(np.ceil((zmax - zref) / vfine)) + 2)
         acc = VoxelAccumulator()
@@ -831,19 +962,12 @@ def run_pipeline(factory, outdir, cfg=None, log=print, probes=(), cache=None, du
             jj = np.floor((q[:, 1] - origin[1]) / vfine).astype(np.int64)
             kk = np.floor((q[:, 2] - zref) / vfine).astype(np.int64)
             acc.add((ii * Df[1] + jj) * Df[2] + kk)
-            if do_col:
-                s2 = (h >= cfg.hcol_min) & (h <= cfg.hcol_max)
-                ii, jj = ix[s2], iy[s2]
-                kk = np.floor((pts[s2, 2] - zref) / vz).astype(np.int64)
-                acc_col.add((ii * Dc[1] + jj) * Dc[2] + kk)
         return acc, Df, nst
 
     # --- visual (0.1m ボクセルの greedy meshing。三角形数が多すぎれば 0.15m へ)
-    do_col = True
     while True:
         vfine = fine_sizes[fine_idx]
-        acc, Df, nstruct = accumulate(vfine, do_col)
-        do_col = False
+        acc, Df, nstruct = accumulate(vfine)
         L(f"structure points={nstruct} (voxel {vfine})")
         keys, counts = acc.result()
         keys = keys[counts >= (cfg.min_count if fine_idx == 0 else cfg.min_count_coarse)]
@@ -889,6 +1013,7 @@ def run_pipeline(factory, outdir, cfg=None, log=print, probes=(), cache=None, du
             del sv, sf, ijk
             continue
         break
+    vis_ijk = ijk.copy()   # 最終 visual ボクセル(ノイズ除去・クリア・box 置換 適用後)。collision はここから導出する
     stats["structure_points"] = nstruct
     stats["structures_voxel"] = vfine
     stats["structures_voxels"] = len(ijk)
@@ -899,63 +1024,47 @@ def run_pipeline(factory, outdir, cfg=None, log=print, probes=(), cache=None, du
     stats["structures_vol"] = fix_winding_report(sv, sf) if len(sf) else 0.0
     del sv, sf, ijk
 
-    # --- collision: 0.2m 2D 占有セルの柱(地形-0.05m から 最大 h まで)を greedy meshing
-    keys, counts = acc_col.result()
-    del acc_col
-    good = counts >= cfg.min_count_col
-    keys, counts = keys[good], counts[good]
-    kk = keys % Dc[2]
-    r = keys // Dc[2]
-    jj = r % Dc[1]
-    ii = r // Dc[1]
-    cid = jj * nx + ii
-    cnt2d = np.bincount(cid, weights=counts, minlength=ny * nx).reshape(ny, nx)
-    from scipy import ndimage as ndi
-    occ2 = cnt2d > 0
-    nb = ndi.convolve(occ2.astype(np.int32), np.ones((3, 3), np.int32), mode="constant") - occ2
-    occ2 &= ~((nb == 0) & (cnt2d < cfg.col_isolated_count))
-    kv = occ2[jj, ii]
-    ii, jj, kk = ii[kv], jj[kv], kk[kv]
+    # --- collision: 最終 visual ボクセルから導出(不変条件: collision ⊂ visual)。
+    # h∈[hcol_min, hcol_max] の visual ボクセルを 0.2m セル x 0.1m 高さビンに割り当て(ボクセルの全高をカバー)、
+    # セルごとに鉛直 run 化して、地面に接する run は地形-0.05m から上端まで柱化する。
     ijk = np.zeros((0, 3), np.int64)
     nruns = 0
-    if len(ii):
-        xv = origin[0] + (ii + 0.5) * cfg.cell
-        yv = origin[1] + (jj + 0.5) * cfg.cell
-        gv = gr.ground[jj, ii]
-        if box_overrides:
+    if len(vis_ijk):
+        xv = origin[0] + (vis_ijk[:, 0] + 0.5) * vfine
+        yv = origin[1] + (vis_ijk[:, 1] + 0.5) * vfine
+        ci = np.clip(np.floor((xv - origin[0]) / cfg.cell).astype(np.int64), 0, nx - 1)
+        cj = np.clip(np.floor((yv - origin[1]) / cfg.cell).astype(np.int64), 0, ny - 1)
+        gvc = gr.ground[cj, ci]
+        zc = zref + (vis_ijk[:, 2] + 0.5) * vfine
+        hc = zc - gvc
+        m = (hc >= cfg.hcol_min) & (hc <= cfg.hcol_max)
+        ci, cj, zc, gvc = ci[m], cj[m], zc[m], gvc[m]
+        if len(ci):
+            k0 = np.floor((zc - vfine / 2 - zref) / vz + 1e-6).astype(np.int64)
+            k1 = np.floor((zc + vfine / 2 - zref) / vz - 1e-6).astype(np.int64)
+            ijk_b = columns_to_voxels(np.c_[ci, cj], k0, k1 + 1)
+            rep = np.repeat(np.arange(len(ci)), np.maximum(k1 + 1 - k0, 0))
+            ii, jj, kk, gv = ijk_b[:, 0], ijk_b[:, 1], ijk_b[:, 2], gvc[rep]
             hv = zref + (kk + 0.5) * vz - gv
-            kb = np.ones(len(ii), bool)
-            for bx in box_overrides:
-                kb &= ~(in_box_footprint(xv, yv, bx, bx["margin"] + 0.7071 * cfg.cell)
-                        & (hv + vz / 2 >= bx["z_bottom_h"]) & (hv - vz / 2 <= bx["z_top_h"]))
-            stats["override_collision_voxels"] = int((~kb).sum())
-            ii, jj, kk, gv = ii[kb], jj[kb], kk[kb], gv[kb]
-    if len(ii):
-        # 鉛直 run に分割。地面に接する run で上端 h <= max_h のものを除去。残りを柱化
+            kp = hv <= cfg.hcol_max
+            ii, jj, kk, gv = ii[kp], jj[kp], kk[kp], gv[kp]
+            u = np.unique(np.c_[jj * nx + ii, kk], axis=0, return_index=True)[1]
+            ii, jj, kk, gv = ii[u], jj[u], kk[u], gv[u]
+    if len(vis_ijk) and len(ci) and len(ii):
         run_id, first, ks, ke = vertical_runs(jj * nx + ii, kk)
         cxr, cyr, g_r = ii[first], jj[first], gv[first]
         hbot = zref + ks * vz - g_r
-        htop = zref + (ke + 0.5) * vz - g_r
         grounded = hbot <= cfg.clear_run_bottom
-        rmc = np.zeros(len(first), bool)
-        if regions:
-            xc = origin[0] + (cxr + 0.5) * cfg.cell
-            yc = origin[1] + (cyr + 0.5) * cfg.cell
-            rmc = clear_decision(xc, yc, htop, regions, origin, shape, cfg,
-                                 log=lambda m: L('collision ' + m))
-            stats["clear_collision_cells"] = int(rmc.sum())
-            L(f"clear: collision removed runs={int(rmc.sum())}")
         kbot = np.where(grounded, np.floor((g_r - cfg.col_bottom - zref) / vz).astype(np.int64), ks)
         ktop = np.maximum(ke + 1, kbot + 1)
-        sel = ~rmc
+        sel = np.ones(len(first), bool)
         if route_path is not None and cfg.collision_route_radius is not None:
             xr = origin[0] + (cxr + 0.5) * cfg.cell
             yr = origin[1] + (cyr + 0.5) * cfg.cell
             near = polyline_distance(np.c_[xr, yr], route_path) <= cfg.collision_route_radius
             L(f"col: route radius {cfg.collision_route_radius}m keeps {int((sel & near).sum())} of {int(sel.sum())} runs")
             sel &= near
-        ijk = columns_to_voxels(np.c_[cxr, cyr][sel], kbot[sel], ktop[sel])
-        ijk = np.unique(ijk, axis=0)
+        ijk = np.unique(columns_to_voxels(np.c_[cxr, cyr][sel], kbot[sel], ktop[sel]), axis=0)
         nruns = int(sel.sum())
     L(f"col: runs={nruns} voxels={len(ijk)}")
     stats["col_cells"] = nruns
@@ -974,7 +1083,7 @@ def run_pipeline(factory, outdir, cfg=None, log=print, probes=(), cache=None, du
     stats["structures_collision_tris"] = len(sf)
     write_obj(os.path.join(mdir, "structures_collision.obj"), sv, sf, normals="face6")
     stats["structures_collision_vol"] = fix_winding_report(sv, sf) if len(sf) else 0.0
-    del sv, sf, ijk, keys, counts
+    del sv, sf, ijk, vis_ijk
     write_model_files(outdir)
     L("done")
     return stats
@@ -1077,7 +1186,7 @@ def main():
     ap.add_argument("--box-overrides-file", default=os.path.join(here, "box_overrides.yaml"),
                     help="実寸直方体への置換 yaml (存在すれば読む。'none' で無効)")
     ap.add_argument("--probe", action="append", default=[], help="x,y の地形高さを表示 (複数可)")
-    NONE_OK = ("collision_route_radius", "terrain_collision_route_radius", "route_smooth_radius")
+    NONE_OK = ("collision_route_radius", "terrain_collision_route_radius", "route_smooth_radius", "pole_route_radius")
 
     def float_or_none(t):
         return None if str(t).lower() == "none" else float(t)

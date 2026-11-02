@@ -75,7 +75,7 @@ def read_obj(path):
                 v.append([float(t) for t in line.split()[1:4]])
             elif line.startswith("f "):
                 f.append([int(t.split("/")[0]) for t in line.split()[1:4]])
-    return np.array(v), np.array(f)
+    return np.array(v).reshape(-1, 3), np.array(f).reshape(-1, 3)
 
 
 def test_ground_recovers_slope_and_step(scene):
@@ -770,3 +770,119 @@ def test_pipeline_route_smoothing_terrain(tmp_path):
     com = [k for k in kr if abs(k[1]) >= 6.5 and k in ks]
     assert len(com) > 100
     assert max(abs(ks[k] - kr[k]) for k in com) < 1e-3
+
+
+# ================================================================ 追加: 不変条件 collision ⊂ visual
+NBOX = 25
+
+
+def make_threshold_scene():
+    rng = np.random.default_rng(61)
+    g = np.arange(-12, 12, 0.05)
+    X, Y = np.meshgrid(g, g)
+    parts = [np.c_[X.ravel(), Y.ravel(), rng.normal(0, 0.002, X.size)]]
+    for i in range(NBOX):                    # h = 0.20 .. 0.32 (しきい値 0.25 付近)、格子とずれた位置、経路(y=0)から 0.3-0.7m
+        x0 = -9.0 + 0.77 * i + 0.013 * i
+        parts.append(_box_pts(x0, x0 + 0.4, 0.3 + 0.01 * (i % 3), 0.7 + 0.01 * (i % 3), 0.0, 0.20 + 0.005 * i))
+    return np.vstack(parts).astype(np.float32)
+
+
+@pytest.fixture(scope="module", params=[(0.1, 3), (0.15, 3)])
+def thr_out(request, tmp_path_factory):
+    vox, mc = request.param
+    out = tmp_path_factory.mktemp("thr")
+    cfg = p.Config(voxel=vox, min_count=mc)
+    p.run_pipeline(lambda: iter([make_threshold_scene()]), str(out), cfg, log=lambda *a: None,
+                   clear_path=np.array([[-10.0, 0.0], [10.0, 0.0]]),
+                   route_path=np.array([[-10.0, 0.0], [10.0, 0.0]]))
+    return out
+
+
+def test_threshold_boxes_visual_and_collision_agree(thr_out):
+    res = []
+    for i in range(NBOX):
+        x0 = -9.0 + 0.77 * i + 0.013 * i
+        v = _count(thr_out, "structures.obj", x0 + 0.1, x0 + 0.3, 0.4, 0.6, 0.1) > 0
+        c = _count(thr_out, "structures_collision.obj", x0 + 0.1, x0 + 0.3, 0.4, 0.6, 0.1) > 0
+        res.append((v, c))
+    assert all(v == c for v, c in res), res
+
+
+def test_collision_cells_have_visual_nearby(thr_out):
+    from scipy.spatial import cKDTree
+    vv, _ = read_obj(os.path.join(thr_out, "meshes", "structures.obj"))
+    cv, _ = read_obj(os.path.join(thr_out, "meshes", "structures_collision.obj"))
+    cv = cv[cv[:, 2] > 0.12]
+    if len(cv) == 0:
+        return
+    tree = cKDTree(vv[:, :2])
+    for q in cv:
+        idx = tree.query_ball_point(q[:2], 0.4)
+        assert idx and np.abs(vv[idx, 2] - q[2]).min() <= 0.35
+
+
+def test_noise_filtered_in_visual_not_in_collision(tmp_path):
+    rng = np.random.default_rng(62)
+    g = np.arange(-6, 6, 0.05)
+    X, Y = np.meshgrid(g, g)
+    base = np.c_[X.ravel(), Y.ravel(), rng.normal(0, 0.002, X.size)]
+    pts = []
+    for fx in (0.02, 0.12):                 # 0.2m セル 1 つに 4 つの 0.1m ボクセル x 3 点 = 12 点 (min_count=5 未満)
+        for fy in (0.02, 0.12):
+            for _ in range(3):
+                pts.append([2.0 + fx, 2.0 + fy, 0.30])
+    sc = np.vstack([base, np.array(pts)]).astype(np.float32)
+    p.run_pipeline(lambda: iter([sc]), str(tmp_path), p.Config(min_count=5), log=lambda *a: None)
+    assert _count(tmp_path, "structures.obj", 1.9, 2.3, 1.9, 2.3, 0.1) == 0
+    assert _count(tmp_path, "structures_collision.obj", 1.9, 2.3, 1.9, 2.3, 0.1) == 0
+
+
+# ================================================================ 追加: 経路沿い細い柱状物の自動実寸置換
+POLE_A = (2.03, 2.15, 1.02, 1.32)     # 0.12 x 0.30
+POLE_B = (3.25, 3.55, 1.05, 1.25)     # 0.30 x 0.20  (A との隙間 1.10)
+POLE_FAR = (2.03, 2.15, 8.02, 8.32)   # 経路から 8m
+
+
+def make_pole_scene(extra=()):
+    rng = np.random.default_rng(71)
+    g = np.arange(-12, 12, 0.05)
+    X, Y = np.meshgrid(g, g)
+    parts = [np.c_[X.ravel(), Y.ravel(), rng.normal(0, 0.002, X.size)]]
+    for (x0, x1, y0, y1) in (POLE_A, POLE_B, POLE_FAR) + tuple(extra):
+        parts.append(_box_pts(x0, x1, y0, y1, 0.0, 1.5))
+    return np.vstack(parts).astype(np.float32)
+
+
+def run_poles(tmp, vox, extra=(), radius=5.0):
+    cfg = p.Config(voxel=vox, pole_route_radius=radius)
+    st = p.run_pipeline(lambda: iter([make_pole_scene(extra)]), str(tmp), cfg, log=lambda *a: None,
+                        route_path=ROUTE2)
+    return st
+
+
+@pytest.mark.parametrize("vox", [0.1, 0.15])
+@pytest.mark.parametrize("name", ["structures.obj", "structures_collision.obj"])
+def test_poles_replaced_with_real_size_and_gap(tmp_path, vox, name):
+    st = run_poles(tmp_path, vox)
+    assert st["poles_replaced"] == 2                      # 隣接 2 本が 1 本にまとまらない / 遠方は置換しない
+    v, _ = read_obj(os.path.join(tmp_path, "meshes", name))
+    def ext(x0, x1, y0, y1):
+        s = (v[:, 0] > x0) & (v[:, 0] < x1) & (v[:, 1] > y0) & (v[:, 1] < y1) & (v[:, 2] > 0.3)
+        return v[s, 0].min(), v[s, 0].max(), v[s, 1].min(), v[s, 1].max()
+    ax0, ax1, ay0, ay1 = ext(1.5, 2.7, 0.7, 1.7)
+    bx0, bx1, by0, by1 = ext(2.9, 4.0, 0.7, 1.7)
+    assert abs((ax1 - ax0) - 0.12) <= 0.03 and abs((ay1 - ay0) - 0.30) <= 0.03
+    assert abs((bx1 - bx0) - 0.30) <= 0.03 and abs((by1 - by0) - 0.20) <= 0.03
+    assert abs((bx0 - ax1) - 1.10) <= 0.05
+
+
+def test_pole_outside_route_radius_not_replaced(tmp_path):
+    st = run_poles(tmp_path, 0.1, radius=None)
+    assert st["poles_replaced"] == 0
+    st2 = run_poles(tmp_path / "r", 0.1, radius=0.5)       # A,B は経路から 1m 以上
+    assert st2["poles_replaced"] == 0
+
+
+def test_wall_not_replaced(tmp_path):
+    st = run_poles(tmp_path, 0.1, extra=((-6.0, -4.0, 1.0, 1.3),))   # 長軸 2m の壁
+    assert st["poles_replaced"] == 2

@@ -36,3 +36,13 @@ env -u PYTHONPATH /home/kyo/pcd2pgm_ws/venv/bin/python -u pcd_to_world.py \
   `meshes/terrain_collision.obj` に出力(同一三角形・再デシメートなし・未使用頂点は詰める・頂点法線つき)。`none` で全域。
   `model.sdf` は terrain の visual が `terrain.obj`、collision が `terrain_collision.obj` を参照する。
 - `--clear-waypoints none` で経路を無効にした場合は、経路が無いため上記の絞り込みも行われない(全域)。
+
+## collision は visual から導出(不変条件: collision ⊂ visual)
+- `structures_collision.obj` は、最終的な visual ボクセル(ノイズ除去・経路/ゾーンクリア・box 置換の適用後)のうち h∈[0.15, 1.2] のものを
+  0.2m セルの柱(鉛直 run 単位・地形-0.05m から上端)に割り当てて作る。独立したボクセル化・クリア判定はしない。
+
+## 経路沿いの細い柱状物の自動実寸置換
+- `--pole-route-radius 5.0`(`none` で無効)以内で、h 0.2〜1.5m の点の水平連結成分(0.05m グリッド)のうち、
+  PCA 長軸(2〜98%幅) ≤ `--pole-max-size 0.6`、h 0.2〜1.0 で鉛直に連続、点数 ≥ `--pole-min-points`、上端 ≥ `--pole-min-top`、
+  上部で横に広がらない(樹冠・壁・頭部付き)ものを、実寸の向き付き直方体(visual・collision 共通)に置換する。
+  手動の `box_overrides.yaml` と重複する場合は手動を優先する。
