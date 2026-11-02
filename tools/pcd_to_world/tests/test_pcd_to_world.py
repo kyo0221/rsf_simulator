@@ -673,3 +673,91 @@ def test_map_latlon_roundtrip_under_1cm():
     lat, lon = p.map_to_latlon(mx, my)
     bx, by = p.latlon_to_map(lat, lon)
     assert np.hypot(bx - mx, by - my).max() < 1e-2
+
+
+# ================================================================ 追加: collision を経路周辺に絞る
+ROUTE = np.array([[-10.0, 0.0], [10.0, 0.0]])
+
+
+def make_route_scene():
+    rng = np.random.default_rng(41)
+    g = np.arange(-20, 20, 0.05)
+    X, Y = np.meshgrid(g, g)
+    parts = [np.c_[X.ravel(), Y.ravel(), rng.normal(0, 0.002, X.size)]]
+    parts.append(_box_pts(2.0, 2.6, 2.7, 3.3, 0.0, 1.0))     # A: 経路から 3m (半径 5 以内)
+    parts.append(_box_pts(2.0, 2.6, 8.7, 9.3, 0.0, 1.0))     # B: 経路から 9m (半径 5 の外)
+    return np.vstack(parts).astype(np.float32)
+
+
+def _route_dist(P, poly):
+    d = np.full(len(P), np.inf)
+    for a, b in zip(poly[:-1], poly[1:]):
+        v = b - a
+        t = np.clip(((P - a) @ v) / (v @ v), 0, 1)
+        d = np.minimum(d, np.hypot(*(P - (a + t[:, None] * v)).T))
+    return d
+
+
+def _read_mesh(path):
+    v, f = read_obj(path)
+    return v, f - 1
+
+
+@pytest.fixture(scope="module")
+def route_runs(tmp_path_factory):
+    sc = make_route_scene()
+    outs = {}
+    for tag, cfg, route in (
+            ("near", p.Config(collision_route_radius=5.0, terrain_collision_route_radius=8.0), ROUTE),
+            ("none", p.Config(collision_route_radius=None, terrain_collision_route_radius=None), ROUTE),
+            ("noroute", p.Config(), None)):
+        out = tmp_path_factory.mktemp("rt_" + tag)
+        p.run_pipeline(lambda: iter([sc]), str(out), cfg, log=lambda *a: None, route_path=route)
+        outs[tag] = out
+    return outs
+
+
+def test_collision_limited_to_route_radius_visual_unchanged(route_runs):
+    near, full = route_runs["near"], route_runs["none"]
+    assert _count(near, "structures_collision.obj", 2.0, 2.6, 2.7, 3.3, 0.4, 1.4) > 0
+    assert _count(near, "structures_collision.obj", 2.0, 2.6, 8.7, 9.3, 0.4, 1.4) == 0
+    assert _count(full, "structures_collision.obj", 2.0, 2.6, 8.7, 9.3, 0.4, 1.4) > 0   # none -> 全域
+    # visual は不変
+    assert open(os.path.join(near, "meshes", "structures.obj")).read() == \
+        open(os.path.join(full, "meshes", "structures.obj")).read()
+    assert _count(near, "structures.obj", 2.0, 2.6, 8.7, 9.3, 0.4, 1.4) > 0
+
+
+def test_terrain_collision_triangles_within_radius_and_complete(route_runs):
+    out = route_runs["near"]
+    v, f = _read_mesh(os.path.join(out, "meshes", "terrain.obj"))
+    vc, fc = _read_mesh(os.path.join(out, "meshes", "terrain_collision.obj"))
+    cen = v[f].mean(axis=1)[:, :2]
+    cenc = vc[fc].mean(axis=1)[:, :2]
+    assert (_route_dist(cenc, ROUTE) <= 8.0 + 1e-6).all()
+    expect = cen[_route_dist(cen, ROUTE) <= 8.0]
+    assert len(fc) == len(expect) > 0
+    a = np.round(np.sort(expect[:, 0] * 1000 + expect[:, 1]), 3)
+    b = np.round(np.sort(cenc[:, 0] * 1000 + cenc[:, 1]), 3)
+    assert np.allclose(a, b, atol=2e-3)
+    assert len(fc) < len(f)
+    assert len(np.unique(fc)) == len(vc)           # 未使用頂点は詰める
+    _, vn, ff = read_obj_full(os.path.join(out, "meshes", "terrain_collision.obj"))
+    assert len(vn) == len(vc) and len(ff) == len(fc)
+
+
+def test_route_none_means_everywhere(route_runs):
+    for tag in ("none", "noroute"):
+        out = route_runs[tag]
+        _, f = _read_mesh(os.path.join(out, "meshes", "terrain.obj"))
+        _, fc = _read_mesh(os.path.join(out, "meshes", "terrain_collision.obj"))
+        assert len(fc) == len(f)
+    assert _count(route_runs["noroute"], "structures_collision.obj", 2.0, 2.6, 8.7, 9.3, 0.4, 1.4) > 0
+
+
+def test_model_sdf_references_terrain_collision(route_runs):
+    sdf = open(os.path.join(route_runs["near"], "model.sdf")).read()
+    vis = sdf[sdf.index('<visual name="terrain_visual">'):sdf.index('</visual>')]
+    col = sdf[sdf.index('<collision name="terrain_collision">'):sdf.index('</collision>')]
+    assert "meshes/terrain.obj" in vis and "terrain_collision.obj" not in vis
+    assert "meshes/terrain_collision.obj" in col

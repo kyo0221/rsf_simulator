@@ -12,7 +12,7 @@
         </material>
       </visual>
       <collision name="terrain_collision">
-        <geometry><mesh><uri>model://tsukuba/meshes/terrain.obj</uri></mesh></geometry>
+        <geometry><mesh><uri>model://tsukuba/meshes/terrain_collision.obj</uri></mesh></geometry>
       </collision>
       <visual name="structures_visual">
         <geometry><mesh><uri>model://tsukuba/meshes/structures.obj</uri></mesh></geometry>

@@ -28,3 +28,11 @@ env -u PYTHONPATH /home/kyo/pcd2pgm_ws/venv/bin/python -u pcd_to_world.py \
   3. → georef の enu_to_map (theta=-2.3500858, tx=156.896102, ty=64.643023) → map
   4. z は `map_z = z + zoff`(`--zoff -24.775`)。全点には 2D アフィン近似を使う(最大残差は fit 時にログ表示)。
 - 旧方式は `--geo-model spherical|ellipsoid`(平面直角 EPSG:6677 + `--oe/--on` オフセット)で残してある。新方式では oe/on は使わない。
+
+## collision を経路周辺に絞る(起動時の負荷削減)
+- `--collision-route-radius 10.0`: 経路(`--clear-waypoints` の yaml + 先頭にスポーン)から 2D 柱の中心までの水平距離が
+  この値以内の柱だけを `structures_collision.obj` に残す。`none` で全域。visual(`structures.obj`)は変わらない。
+- `--terrain-collision-route-radius 20.0`: デシメート済み terrain の三角形のうち、重心が経路から半径以内のものだけを
+  `meshes/terrain_collision.obj` に出力(同一三角形・再デシメートなし・未使用頂点は詰める・頂点法線つき)。`none` で全域。
+  `model.sdf` は terrain の visual が `terrain.obj`、collision が `terrain_collision.obj` を参照する。
+- `--clear-waypoints none` で経路を無効にした場合は、経路が無いため上記の絞り込みも行われない(全域)。

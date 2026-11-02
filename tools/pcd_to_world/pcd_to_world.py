@@ -11,6 +11,7 @@ import os
 import resource
 import time
 from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 
@@ -158,6 +159,8 @@ class Config:
     structures_tris: int = 4_000_000   # 上限目安: 超えたらボクセルを voxel_coarse に上げる(間引きはしない)
     collision_tris: int = 1_000_000    # 目安(超過してもエラーにはしない)
     voxel_coarse: float = 0.15
+    collision_route_radius: Optional[float] = 10.0          # structures_collision を経路から何 m 以内の柱に絞るか(None=全域)
+    terrain_collision_route_radius: Optional[float] = 20.0  # terrain_collision.obj を経路から何 m 以内の三角形に絞るか(None=全域)
     clear_radius: float = 1.0      # 経路折れ線からの水平距離[m]
     clear_max_h: float = 0.25      # セルの構造物最大hがこれ以下なら除去
     clear_run_bottom: float = 0.25 # 地面に接する run とみなす下端 h の上限[m]
@@ -339,6 +342,20 @@ def add_override_boxes(sv, sf, boxes, gr, origin, cfg, collision):
         sf = np.concatenate([sf, f + len(sv)]) if len(sf) else f
         sv = np.concatenate([sv, v]) if len(sv) else v
     return sv, sf
+
+
+def polyline_distance(P, poly):
+    """点 P(N,2) から折れ線 poly(M,2) までの水平距離。"""
+    P = np.asarray(P, np.float64)
+    poly = np.asarray(poly, np.float64)
+    d = np.full(len(P), np.inf)
+    segs = list(zip(poly[:-1], poly[1:])) if len(poly) > 1 else [(poly[0], poly[0])]
+    for a, b in segs:
+        v = b - a
+        L2 = float(v @ v)
+        t = np.zeros(len(P)) if L2 < 1e-12 else np.clip(((P - a) @ v) / L2, 0, 1)
+        d = np.minimum(d, np.hypot(P[:, 0] - (a[0] + t * v[0]), P[:, 1] - (a[1] + t * v[1])))
+    return d
 
 
 def parse_zone(txt):
@@ -764,7 +781,7 @@ def _fmt_mem():
     return f"{resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1048576:.1f}GB"
 
 
-def run_pipeline(factory, outdir, cfg=None, log=print, probes=(), cache=None, dump_ground=None, clear_path=None, clear_zones=(), box_overrides=()):
+def run_pipeline(factory, outdir, cfg=None, log=print, probes=(), cache=None, dump_ground=None, clear_path=None, clear_zones=(), box_overrides=(), route_path=None):
     cfg = cfg or Config()
     t0 = time.time()
     stats = {}
@@ -823,6 +840,21 @@ def run_pipeline(factory, outdir, cfg=None, log=print, probes=(), cache=None, du
     stats["terrain_tris"] = len(df)
     mdir = os.path.join(outdir, "meshes")
     write_obj(os.path.join(mdir, "terrain.obj"), dv, df)
+    # terrain collision: デシメート済み三角形のうち、重心が経路から半径以内のものだけ(同一三角形、再デシメートなし)
+    if route_path is not None and cfg.terrain_collision_route_radius is not None:
+        cen = dv[df].mean(axis=1)[:, :2]
+        tsel = polyline_distance(cen, route_path) <= cfg.terrain_collision_route_radius
+        cf = df[tsel]
+        used = np.unique(cf)
+        remap = np.full(len(dv), -1, np.int64)
+        remap[used] = np.arange(len(used))
+        tcv, tcf = dv[used], remap[cf]
+    else:
+        tcv, tcf = dv, df
+    stats["terrain_collision_tris"] = len(tcf)
+    L(f"terrain_collision tris={len(tcf)} (terrain {len(df)})")
+    write_obj(os.path.join(mdir, "terrain_collision.obj"), tcv, tcf)
+    del tcv, tcf
     stats["probes"] = {}
     for (px, py) in probes:
         h = mesh_heights(dv, df, np.array([px]), np.array([py]))[0]
@@ -983,6 +1015,12 @@ def run_pipeline(factory, outdir, cfg=None, log=print, probes=(), cache=None, du
         kbot = np.where(grounded, np.floor((g_r - cfg.col_bottom - zref) / vz).astype(np.int64), ks)
         ktop = np.maximum(ke + 1, kbot + 1)
         sel = ~rmc
+        if route_path is not None and cfg.collision_route_radius is not None:
+            xr = origin[0] + (cxr + 0.5) * cfg.cell
+            yr = origin[1] + (cyr + 0.5) * cfg.cell
+            near = polyline_distance(np.c_[xr, yr], route_path) <= cfg.collision_route_radius
+            L(f"col: route radius {cfg.collision_route_radius}m keeps {int((sel & near).sum())} of {int(sel.sum())} runs")
+            sel &= near
         ijk = columns_to_voxels(np.c_[cxr, cyr][sel], kbot[sel], ktop[sel])
         ijk = np.unique(ijk, axis=0)
         nruns = int(sel.sum())
@@ -995,7 +1033,11 @@ def run_pipeline(factory, outdir, cfg=None, log=print, probes=(), cache=None, du
         sv, sf = np.zeros((0, 3)), np.zeros((0, 3), np.int64)
     L(f"col: tris={len(sf)}")
     stats["structures_collision_tris"] = len(sf)
-    sv, sf = add_override_boxes(sv, sf, box_overrides, gr, origin, cfg, collision=True)
+    cboxes = box_overrides
+    if route_path is not None and cfg.collision_route_radius is not None:
+        cboxes = [b for b in box_overrides
+                  if polyline_distance(np.array([[b["center_x"], b["center_y"]]]), route_path)[0] <= cfg.collision_route_radius]
+    sv, sf = add_override_boxes(sv, sf, cboxes, gr, origin, cfg, collision=True)
     stats["structures_collision_tris"] = len(sf)
     write_obj(os.path.join(mdir, "structures_collision.obj"), sv, sf, normals="face6")
     stats["structures_collision_vol"] = fix_winding_report(sv, sf) if len(sf) else 0.0
@@ -1020,7 +1062,7 @@ SDF = """<?xml version="1.0"?>
         </material>
       </visual>
       <collision name="terrain_collision">
-        <geometry><mesh><uri>model://tsukuba/meshes/terrain.obj</uri></mesh></geometry>
+        <geometry><mesh><uri>model://tsukuba/meshes/terrain_collision.obj</uri></mesh></geometry>
       </collision>
       <visual name="structures_visual">
         <geometry><mesh><uri>model://tsukuba/meshes/structures.obj</uri></mesh></geometry>
@@ -1109,8 +1151,11 @@ def main():
     ap.add_argument("--box-overrides-file", default=os.path.join(here, "box_overrides.yaml"),
                     help="実寸直方体への置換 yaml (存在すれば読む。'none' で無効)")
     ap.add_argument("--probe", action="append", default=[], help="x,y の地形高さを表示 (複数可)")
+    def float_or_none(t):
+        return None if str(t).lower() == "none" else float(t)
     for k, v in Config().__dict__.items():
-        ap.add_argument("--" + k.replace("_", "-"), type=type(v), default=v)
+        ap.add_argument("--" + k.replace("_", "-"), type=float_or_none if k.endswith("route_radius") else type(v),
+                        default=v, help="none で無効(全域)" if k.endswith("route_radius") else None)
     a = ap.parse_args()
     cfg = Config(**{k: getattr(a, k) for k in Config().__dict__})
     g = GeoParams(oe=a.oe, on=a.on, zoff=a.zoff, model=a.geo_model, origin_lat=a.origin_lat,
@@ -1143,7 +1188,7 @@ def main():
         boxes = load_boxes(a.box_overrides_file)
     print(f"box overrides: {boxes}")
     stats = run_pipeline(factory, a.out, cfg, probes=probes, cache=a.cache, dump_ground=a.dump_ground,
-                         clear_path=clear_path, clear_zones=zones, box_overrides=boxes)
+                         clear_path=clear_path, clear_zones=zones, box_overrides=boxes, route_path=clear_path)
     print(stats)
 
 
