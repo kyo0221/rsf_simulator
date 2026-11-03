@@ -8,7 +8,7 @@ import rclpy
 from nav_msgs.msg import Odometry
 from nmea_msgs.msg import Gpgga
 from rclpy.node import Node
-from sensor_msgs.msg import Imu, NavSatFix, PointCloud2
+from sensor_msgs.msg import Imu, NavSatFix, NavSatStatus, PointCloud2
 
 from rsf_gnss_geo import altitude_from_z, xy_to_latlon
 
@@ -115,7 +115,9 @@ class RsfDeviceEmulator(Node):
         lat, lon = self.latlon(odom)
         fix = NavSatFix()
         fix.header = msg.header
-        fix.status.status = 0
+        # 実機の受信機と同じく RTK Fix は STATUS_GBAS_FIX(2), 測位劣化区間 (Float) は STATUS_SBAS_FIX(1)
+        gap = self.in_gap(odom)
+        fix.status.status = NavSatStatus.STATUS_SBAS_FIX if gap else NavSatStatus.STATUS_GBAS_FIX
         alt = self.altitude(odom)
         fix.latitude, fix.longitude, fix.altitude = lat, lon, alt
         fix.position_covariance[0] = fix.position_covariance[4] = self.p['gnss_noise_m'] ** 2
@@ -126,7 +128,7 @@ class RsfDeviceEmulator(Node):
         g.lat, g.lat_dir = abs(lat), 'N' if lat >= 0 else 'S'
         g.lon, g.lon_dir = abs(lon), 'E' if lon >= 0 else 'W'
         g.alt = alt
-        g.gps_qual = 5 if self.in_gap(odom) else 4
+        g.gps_qual = 5 if gap else 4
         g.num_sats = 20
         g.hdop = 0.8
         self.gga_pub.publish(g)
