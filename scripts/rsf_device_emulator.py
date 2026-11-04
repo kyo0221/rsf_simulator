@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import copy
 import math
 import struct
 from collections import deque
@@ -31,9 +32,11 @@ class RsfDeviceEmulator(Node):
         p = self.declare_parameters('', [
             ('odom_in', '/rsf/rsf_odom'), ('imu_in', '/rsf/sim/imu'), ('navsat_in', '/rsf/sim/nav_sat_fix'), ('cloud_in', '/rsf/hokuyo_cloud2'),
             ('lio_out', '/rsf/lio_lidar_rate_odom'), ('imu_out', '/rsf/imu'), ('gga_out', '/rsf/gpgga'), ('navsat_out', '/rsf/nav_sat_fix'),
+            # 車輪オドメトリ (実機の icart と同じトピック). 前進速度に倍率誤差とノイズを与える
+            ('wheel_out', '/icart/odom'), ('wheel_scale', 1.0), ('wheel_noise', 0.02),
             # map = 点群座標 = 公式原点(datum)中心の局所 ENU。rsf_3d_localization と同じ式の逆で緯度経度にする。
             ('datum_lat', 36.08288044139598), ('datum_lon', 140.07654638977903), ('datum_alt', 41.1224),
-            ('base_to_sensor', [0.3, 0.0, 0.35]), ('gnss_noise_m', 0.02), ('lio_jitter_m', 0.0), ('lio_scale', 1.0), ('gyro_bias_dps', 0.0), ('gnss_gap_zones', [0.0]), ('seed', 0)])
+            ('base_to_sensor', [0.3, 0.0, 0.35]), ('gnss_lever', [-0.1061, 0.1254, 0.0]), ('gnss_noise_m', 0.02), ('lio_jitter_m', 0.0), ('lio_scale', 1.0), ('gyro_bias_dps', 0.0), ('gnss_gap_zones', [0.0]), ('seed', 0)])
         self.p = {v.name: v.value for v in p}
         z = self.p['gnss_gap_zones']
         self.zones = [z[i:i + 5] for i in range(0, len(z) - 4, 5)]
@@ -41,6 +44,7 @@ class RsfDeviceEmulator(Node):
         self.odoms = deque(maxlen=400)
         self.origin = None
         self.lio_pub = self.create_publisher(Odometry, self.p['lio_out'], 50)
+        self.wheel_pub = self.create_publisher(Odometry, self.p['wheel_out'], 50)
         self.imu_pub = self.create_publisher(Imu, self.p['imu_out'], 500)
         self.gga_pub = self.create_publisher(Gpgga, self.p['gga_out'], 10)
         self.navsat_pub = self.create_publisher(NavSatFix, self.p['navsat_out'], 10)
@@ -50,17 +54,26 @@ class RsfDeviceEmulator(Node):
         self.create_subscription(PointCloud2, self.p['cloud_in'], self.on_cloud, 10, raw=True)
 
     def on_odom(self, msg):
+        wheel = Odometry()
+        wheel.header.stamp = msg.header.stamp
+        wheel.header.frame_id, wheel.child_frame_id = 'odom', 'base_footprint'
+        wheel.twist.twist.linear.x = float(
+            self.p['wheel_scale'] * msg.twist.twist.linear.x + self.rng.normal(0.0, self.p['wheel_noise']))
+        wheel.twist.twist.angular.z = msg.twist.twist.angular.z
+        self.wheel_pub.publish(wheel)
+        # LIO 用はセンサ位置, GNSS 用は base 位置 (アンテナ位置は antenna() で base から求める)
+        base = copy.deepcopy(msg)
         q = msg.pose.pose.orientation
         p = msg.pose.pose.position
         sensor = np.array([p.x, p.y, p.z]) + quat_matrix(q.x, q.y, q.z, q.w) @ self.p['base_to_sensor']
         msg.pose.pose.position.x, msg.pose.pose.position.y, msg.pose.pose.position.z = (float(v) for v in sensor)
-        self.odoms.append((msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9, msg))
+        self.odoms.append((msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9, msg, base))
 
-    def odom_at(self, sec, nanosec):
+    def odom_at(self, sec, nanosec, base=False):
         if not self.odoms:
             return None
         t = sec + nanosec * 1e-9
-        return min(self.odoms, key=lambda o: abs(o[0] - t))[1]
+        return min(self.odoms, key=lambda o: abs(o[0] - t))[2 if base else 1]
 
     def on_cloud(self, raw):
         sec, nanosec = struct.unpack_from('<iI', raw, 4)
@@ -99,17 +112,21 @@ class RsfDeviceEmulator(Node):
                 return True
         return False
 
+    def antenna(self, odom):
+        # 測位するのはアンテナの位置. localization の gnss_lever (base から見たアンテナ位置) と合わせる
+        p, q = odom.pose.pose.position, odom.pose.pose.orientation
+        return np.array([p.x, p.y, p.z]) + quat_matrix(q.x, q.y, q.z, q.w) @ np.array(self.p['gnss_lever'])
+
     def latlon(self, odom):
-        p = odom.pose.pose.position
-        xy = np.array([p.x, p.y]) + self.rng.normal(0.0, self.p['gnss_noise_m'], 2)
+        xy = self.antenna(odom)[:2] + self.rng.normal(0.0, self.p['gnss_noise_m'], 2)
         return xy_to_latlon(xy[0], xy[1], self.p['datum_lat'], self.p['datum_lon'])
 
     def altitude(self, odom):
         # localization は z = altitude + gnss_offset(z=-41.1224) として使うので altitude = map z + datum_alt
-        return altitude_from_z(odom.pose.pose.position.z, self.p['datum_alt'])
+        return altitude_from_z(self.antenna(odom)[2], self.p['datum_alt'])
 
     def on_navsat(self, msg):
-        odom = self.odom_at(msg.header.stamp.sec, msg.header.stamp.nanosec)
+        odom = self.odom_at(msg.header.stamp.sec, msg.header.stamp.nanosec, base=True)
         if odom is None:
             return
         lat, lon = self.latlon(odom)

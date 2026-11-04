@@ -886,3 +886,35 @@ def test_pole_outside_route_radius_not_replaced(tmp_path):
 def test_wall_not_replaced(tmp_path):
     st = run_poles(tmp_path, 0.1, extra=((-6.0, -4.0, 1.0, 1.3),))   # 長軸 2m の壁
     assert st["poles_replaced"] == 2
+
+
+# ================================================================ 追加: --name (モデル名の汎用化)
+
+
+def test_write_model_files_uses_name(tmp_path):
+    out = tmp_path / "tsudanuma"
+    p.write_model_files(str(out), name="tsudanuma")
+    sdf = (out / "model.sdf").read_text()
+    cfg = (out / "model.config").read_text()
+    assert '<model name="tsudanuma">' in sdf
+    for m in ("terrain", "terrain_collision", "structures", "structures_collision"):
+        assert f"model://tsudanuma/meshes/{m}.obj" in sdf
+    assert "tsukuba" not in sdf and "tsukuba" not in cfg
+    assert "<name>tsudanuma</name>" in cfg
+
+
+def test_write_model_files_default_name_is_tsukuba(tmp_path):
+    p.write_model_files(str(tmp_path))
+    assert '<model name="tsukuba">' in (tmp_path / "model.sdf").read_text()
+    assert "<name>tsukuba</name>" in (tmp_path / "model.config").read_text()
+
+
+def test_run_pipeline_name_reflected_in_model_files(tmp_path):
+    sc = make_scene()
+    p.run_pipeline(lambda: iter([sc]), str(tmp_path), p.Config(), log=lambda *a: None, name="foo")
+    assert "model://foo/meshes/terrain.obj" in (tmp_path / "model.sdf").read_text()
+
+
+def test_cli_default_out_follows_name():
+    assert p.default_out_dir("tsudanuma").endswith(os.path.join("models", "tsudanuma"))
+    assert p.default_out_dir("tsukuba").endswith(os.path.join("models", "tsukuba"))

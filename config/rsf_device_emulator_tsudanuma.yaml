@@ -1,0 +1,12 @@
+# tsudanuma ワールド用。datum は概略値の仮置き (TODO: 点群原点の正確な georef 判明後に差し替え。worlds/tsudanuma.sdf の spherical_coordinates と揃える)。
+rsf_device_emulator:
+  ros__parameters:
+    use_sim_time: true
+    lio_jitter_m: 0.015
+    lio_scale: 1.03
+    gyro_bias_dps: 0.033
+    datum_lat: 35.6893
+    datum_lon: 140.0207
+    datum_alt: 0.0
+    # tsudanuma は GNSS 欠損ゾーンなし (スクリプトは 5 要素未満を空扱い)
+    gnss_gap_zones: [0.0]

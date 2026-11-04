@@ -1,6 +1,6 @@
 # pcd_to_world
 
-点群地図(PCD)から Gazebo 用モデル `models/tsukuba` を生成する。
+点群地図(PCD)から Gazebo 用モデル `models/<name>` (既定 `--name tsukuba`) を生成する。
 
 ## 再生成コマンド
 ```
@@ -16,6 +16,20 @@ env -u PYTHONPATH /home/kyo/pcd2pgm_ws/venv/bin/python -u pcd_to_world.py \
 - 開発用: `--cache X.npz`(セル統計キャッシュ)
 - 柱の置換: `box_overrides.yaml`(`--box-overrides-file`、`none` で無効)。指定 footprint+margin 内の h 範囲のボクセル/柱を除去し、実寸の向き付き直方体を追加する。
 - 除去の判定は鉛直方向に連続するボクセルの run 単位(run の上端 h <= max_h なら除去。屋根・樹冠・柱は上端が高いので残る)。
+
+### tsudanuma の再生成
+`--name` でモデル名を指定する(model.sdf の name / `model://<name>/...` / 既定の出力先 `models/<name>` に反映)。
+tsukuba 固有の入力(経路・ゾーン・箱置換)は無効化する。経路が無いので経路依存の処理(経路平滑化・collision 絞り込み・柱置換)は全域/無効になる。
+```
+# 入力は密な点群(24,155,990 点、非圧縮 binary)。変換不要でそのまま読める。
+env -u PYTHONPATH /home/kyo/pcd2pgm_ws/venv/bin/python -u pcd_to_world.py \
+  --name tsudanuma --pcd /home/kyo/Documents/tsudanuma.pcd \
+  --clear-waypoints none --clear-zones-file none --box-overrides-file none --probe 0,0
+```
+- voxel / min-count は tsukuba と同じ既定値。fine の三角形数が 4M を超えるため自動で voxel 0.15 にリトライされる
+  (structures.obj 約 71MB、structures_collision.obj 約 13MB、約 50 秒、ピークメモリ約 2.3GB)。
+- 以前の疎な点群(約 2.1M 点、binary_compressed)では既定値だと構造物が 0 個になり、voxel 0.3 / min-count 2 で妥協していた。現在は不要。
+- 原点付近の地形高さは `(0,0) = -0.411`。
 
 ## 座標系
 - **点群座標 = map 座標(恒等)**。点群の x,y は公式原点(36.082880°N, 140.076545°E, JGD2024)中心の局所 ENU、z は標高で、

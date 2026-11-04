@@ -1,0 +1,12 @@
+このモデル (models/tsukuba 配下のメッシュ・model.sdf・model.config) および worlds/tsukuba.sdf は、
+以下の点群地図を tools/pcd_to_world で地形・構造物メッシュに変換・改変したものです。
+
+  元データ : map_tc26_gnss_ise-robotics (Tsukuba Challenge 2026 Course, GNSS map)
+  提供     : ISE Robotics
+  入手元   : https://github.com/raucha/tc-datasets/tree/add-map
+  ライセンス: CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/)
+
+主な改変: ボクセル化・メッシュ化、ノイズ除去、経路沿いの地形平滑化と低い障害物の除去、柱の実寸直方体への置換。
+
+本モデルおよび worlds/tsukuba.sdf は CC BY-NC-SA 4.0 で提供します (全文は同ディレクトリの LICENSE)。
+パッケージ内のその他のコードには Apache-2.0 が適用されます。

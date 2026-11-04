@@ -822,7 +822,7 @@ def _fmt_mem():
     return f"{resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1048576:.1f}GB"
 
 
-def run_pipeline(factory, outdir, cfg=None, log=print, probes=(), cache=None, dump_ground=None, clear_path=None, clear_zones=(), box_overrides=(), route_path=None):
+def run_pipeline(factory, outdir, cfg=None, log=print, probes=(), cache=None, dump_ground=None, clear_path=None, clear_zones=(), box_overrides=(), route_path=None, name="tsukuba"):
     cfg = cfg or Config()
     t0 = time.time()
     stats = {}
@@ -1017,7 +1017,6 @@ def run_pipeline(factory, outdir, cfg=None, log=print, probes=(), cache=None, du
     stats["structure_points"] = nstruct
     stats["structures_voxel"] = vfine
     stats["structures_voxels"] = len(ijk)
-    stats["structures_tris"] = len(sf)
     sv, sf = add_override_boxes(sv, sf, box_overrides, gr, origin, cfg, collision=False)
     stats["structures_tris"] = len(sf)
     write_obj(os.path.join(mdir, "structures.obj"), sv, sf, normals="face6")
@@ -1074,7 +1073,6 @@ def run_pipeline(factory, outdir, cfg=None, log=print, probes=(), cache=None, du
     else:
         sv, sf = np.zeros((0, 3)), np.zeros((0, 3), np.int64)
     L(f"col: tris={len(sf)}")
-    stats["structures_collision_tris"] = len(sf)
     cboxes = box_overrides
     if route_path is not None and cfg.collision_route_radius is not None:
         cboxes = [b for b in box_overrides
@@ -1084,7 +1082,7 @@ def run_pipeline(factory, outdir, cfg=None, log=print, probes=(), cache=None, du
     write_obj(os.path.join(mdir, "structures_collision.obj"), sv, sf, normals="face6")
     stats["structures_collision_vol"] = fix_winding_report(sv, sf) if len(sf) else 0.0
     del sv, sf, ijk, vis_ijk
-    write_model_files(outdir)
+    write_model_files(outdir, name)
     L("done")
     return stats
 
@@ -1092,11 +1090,11 @@ def run_pipeline(factory, outdir, cfg=None, log=print, probes=(), cache=None, du
 # ---------------------------------------------------------------- モデルファイル
 SDF = """<?xml version="1.0"?>
 <sdf version="1.9">
-  <model name="tsukuba">
+  <model name="@NAME@">
     <static>true</static>
     <link name="link">
       <visual name="terrain_visual">
-        <geometry><mesh><uri>model://tsukuba/meshes/terrain.obj</uri></mesh></geometry>
+        <geometry><mesh><uri>model://@NAME@/meshes/terrain.obj</uri></mesh></geometry>
         <material>
           <ambient>0.62 0.62 0.60 1</ambient>
           <diffuse>0.62 0.62 0.60 1</diffuse>
@@ -1104,10 +1102,10 @@ SDF = """<?xml version="1.0"?>
         </material>
       </visual>
       <collision name="terrain_collision">
-        <geometry><mesh><uri>model://tsukuba/meshes/terrain_collision.obj</uri></mesh></geometry>
+        <geometry><mesh><uri>model://@NAME@/meshes/terrain_collision.obj</uri></mesh></geometry>
       </collision>
       <visual name="structures_visual">
-        <geometry><mesh><uri>model://tsukuba/meshes/structures.obj</uri></mesh></geometry>
+        <geometry><mesh><uri>model://@NAME@/meshes/structures.obj</uri></mesh></geometry>
         <material>
           <ambient>0.55 0.60 0.68 1</ambient>
           <diffuse>0.55 0.60 0.68 1</diffuse>
@@ -1115,7 +1113,7 @@ SDF = """<?xml version="1.0"?>
         </material>
       </visual>
       <collision name="structures_collision">
-        <geometry><mesh><uri>model://tsukuba/meshes/structures_collision.obj</uri></mesh></geometry>
+        <geometry><mesh><uri>model://@NAME@/meshes/structures_collision.obj</uri></mesh></geometry>
       </collision>
     </link>
   </model>
@@ -1124,23 +1122,28 @@ SDF = """<?xml version="1.0"?>
 
 CONFIG = """<?xml version="1.0"?>
 <model>
-  <name>tsukuba</name>
+  <name>@NAME@</name>
   <version>1.0</version>
   <sdf version="1.9">model.sdf</sdf>
   <description>
-    つくば高精度点群地図から生成した地形+構造物メッシュ (map 座標そのまま、モデル姿勢は原点)。
+    点群地図から生成した地形+構造物メッシュ (map 座標そのまま、モデル姿勢は原点)。
     tools/pcd_to_world/pcd_to_world.py で生成。手で編集しないこと。
   </description>
 </model>
 """
 
 
-def write_model_files(outdir):
+def write_model_files(outdir, name="tsukuba"):
     os.makedirs(outdir, exist_ok=True)
     with open(os.path.join(outdir, "model.sdf"), "w") as f:
-        f.write(SDF)
+        f.write(SDF.replace("@NAME@", name))
     with open(os.path.join(outdir, "model.config"), "w") as f:
-        f.write(CONFIG)
+        f.write(CONFIG.replace("@NAME@", name))
+
+
+def default_out_dir(name):
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.normpath(os.path.join(here, "..", "..", "models", name))
 
 
 # ---------------------------------------------------------------- PCD 入力
@@ -1173,7 +1176,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     here = os.path.dirname(os.path.abspath(__file__))
     ap.add_argument("--pcd", default="/home/kyo/Downloads/tsukuba_map/cleaned_dense_2p5cm_tsukuba_jgd2024_intensity.pcd")
-    ap.add_argument("--out", default=os.path.normpath(os.path.join(here, "..", "..", "models", "tsukuba")))
+    ap.add_argument("--name", default="tsukuba", help="モデル名 (model.sdf の name / model:// URI)")
+    ap.add_argument("--out", default=None, help="出力先 (既定 models/<name>)")
     ap.add_argument("--stride", type=int, default=1, help="点の間引き(開発用)")
     ap.add_argument("--cache", default=None, help="セル最小zのキャッシュ(.npz)。開発用")
     ap.add_argument("--dump-ground", default=None)
@@ -1194,6 +1198,8 @@ def main():
         ap.add_argument("--" + k.replace("_", "-"), type=float_or_none if k in NONE_OK else type(v),
                         default=v, help="none で無効" if k in NONE_OK else None)
     a = ap.parse_args()
+    if a.out is None:
+        a.out = default_out_dir(a.name)
     cfg = Config(**{k: getattr(a, k) for k in Config().__dict__})
     factory, npts, mm = pcd_chunks_factory(a.pcd, cfg.chunk, a.stride)
     probes = [tuple(float(t) for t in s.split(",")) for s in a.probe]
@@ -1213,7 +1219,7 @@ def main():
         boxes = load_boxes(a.box_overrides_file)
     print(f"box overrides: {boxes}")
     stats = run_pipeline(factory, a.out, cfg, probes=probes, cache=a.cache, dump_ground=a.dump_ground,
-                         clear_path=clear_path, clear_zones=zones, box_overrides=boxes, route_path=clear_path)
+                         clear_path=clear_path, clear_zones=zones, box_overrides=boxes, route_path=clear_path, name=a.name)
     print(stats)
 
 

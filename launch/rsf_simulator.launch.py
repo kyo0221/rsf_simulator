@@ -3,7 +3,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
-from launch.actions import AppendEnvironmentVariable, DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import AppendEnvironmentVariable, DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -17,15 +17,17 @@ def generate_launch_description():
         default_value='tsudanuma2-3',
         choices=['tsudanuma2-3', 'tsudanuma', 'tsukuba'],
         description='World in rsf_simulator/worlds: tsudanuma2-3 (building editor), '
-                    'tsudanuma (generated from an occupancy grid map by map2sdf) or '
+                    'tsudanuma (Tsudanuma campus, generated from a point cloud map by tools/pcd_to_world) or '
                     'tsukuba (Tsukuba city hall area with slopes)'
     )
     gz_args_arg = DeclareLaunchArgument('gz_args', default_value='-r -v 4')
     emulator_params_arg = DeclareLaunchArgument(
         'emulator_params',
-        default_value=os.path.join(simulator_dir, 'config', 'rsf_device_emulator.yaml'),
+        default_value='',
         description='Parameters of the node that emulates the RSF-X001 outputs missing in Gazebo '
-                    '(LiDAR-rate LIO odometry, GPGGA fix quality, IMU in device axes)'
+                    '(LiDAR-rate LIO odometry, GPGGA fix quality, IMU in device axes). '
+                    'If empty, config/rsf_device_emulator_<world>.yaml is used when it exists, '
+                    'otherwise config/rsf_device_emulator.yaml'
     )
 
     world_file = PathJoinSubstitution([
@@ -69,13 +71,22 @@ def generate_launch_description():
         output='screen',
     )
 
-    emulator_node = Node(
-        package='rsf_simulator',
-        executable='rsf_device_emulator.py',
-        name='rsf_device_emulator',
-        parameters=[LaunchConfiguration('emulator_params')],
-        output='screen',
-    )
+    def make_emulator(context):
+        params = LaunchConfiguration('emulator_params').perform(context)
+        if not params:
+            world = LaunchConfiguration('world').perform(context)
+            params = os.path.join(simulator_dir, 'config', f'rsf_device_emulator_{world}.yaml')
+            if not os.path.exists(params):
+                params = os.path.join(simulator_dir, 'config', 'rsf_device_emulator.yaml')
+        return [Node(
+            package='rsf_simulator',
+            executable='rsf_device_emulator.py',
+            name='rsf_device_emulator',
+            parameters=[params],
+            output='screen',
+        )]
+
+    emulator_node = OpaqueFunction(function=make_emulator)
 
     return LaunchDescription([
         world_arg,

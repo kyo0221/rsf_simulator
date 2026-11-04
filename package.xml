@@ -4,9 +4,11 @@
   <name>rsf_simulator</name>
   <version>0.1.0</version>
   <description>Ignition Gazebo Fortress simulator for orne_box with Hokuyo RSF-X001 sensor system</description>
-  <maintainer email="teiruyamashita@icloud.com">Kyo Yamashita</maintainer>
+  <maintainer email="s21c1135sc@chibatech.ac.jp">Kyo Yamashita</maintainer>
   <author email="teiruyamashita@icloud.com">Kyo Yamashita</author>
-  <license>BSD-3-Clause</license>
+  <license>Apache-2.0</license>
+  <license file="models/tsukuba/LICENSE">CC-BY-NC-SA-4.0</license>
+  <license file="models/tsudanuma/LICENSE">BSD-2-Clause</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
@@ -15,6 +17,9 @@
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
   <exec_depend>ros_gz_sim</exec_depend>
   <exec_depend>ros_gz_bridge</exec_depend>
   <exec_depend>rclpy</exec_depend>

@@ -133,7 +133,8 @@
 
     <!-- つくば高精度点群地図(JGD2024, 2.5cm)から tools/pcd_to_world で生成。
          map = 点群座標(公式原点 36.082880N,140.076545E 中心の局所 ENU、z は標高そのもの)。恒等変換で配置済み。
-         スポーン = 新 waypoint の始点 (24.808, 3.303, yaw 3.065)、z = 地形高さ 24.999 + 0.05 -->
+         スポーン = 新 waypoint の始点 (24.808, 3.303, yaw 3.065)、z = 地形高さ 24.999 + 0.05
+         ライセンス: 元データ map_tc26_gnss_ise-robotics (ISE Robotics) の CC BY-NC-SA 4.0 を継承。models/tsukuba/NOTICE 参照 -->
     <include>
       <uri>model://tsukuba</uri>
       <pose>0 0 0 0 0 0</pose>

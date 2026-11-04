@@ -1,0 +1,9 @@
+このモデル (models/tsudanuma 配下のメッシュ・model.sdf・model.config) および worlds/tsudanuma.sdf は、
+以下の点群地図 (ダウンサンプリング前の版) を tools/pcd_to_world で地形・構造物メッシュに変換・改変したものです。
+
+  元データ : orne_box_navigation_executor/config/maps/tsudanuma/tsudanuma.pcd (千葉工業大学 津田沼キャンパス)
+  入手元   : https://github.com/open-rdc/orne-box/tree/humble/3d
+  ライセンス: BSD 2-Clause, Copyright (c) 2014, Robot Design and Control Lab. (全文は同ディレクトリの LICENSE)
+
+主な改変: ボクセル化・メッシュ化、ノイズ除去。
+パッケージ内のその他のコードには Apache-2.0 が適用されます。
