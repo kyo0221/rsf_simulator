@@ -126,14 +126,15 @@
 
     
 
-    <!-- スポーン: 点群原点 (0, 0)、yaw 0。z = 地形高さ -0.411 + 0.05 -->
+    <!-- スポーン: 点群原点 (0, 0)、yaw 0。z = 地形高さ -0.394 + 0.05 -->
     <include>
       <uri>model://orne_boxF</uri>
-      <pose>0 0 -0.361 0 0 0</pose>
+      <pose>0 0 -0.344 0 0 0</pose>
     </include>
 
     <!-- 津田沼キャンパスの点群地図 /home/kyo/Documents/tsudanuma.pcd (24155990 点, binary 非圧縮, ダウンサンプリング前) から
          tools/pcd_to_world (name=tsudanuma, voxel/min-count は既定値; 構造物は自動で voxel 0.15 にフォールバック) で生成した地形+構造物メッシュ。
+         経路 (tsudanuma_wp.yaml) から 1.0m 以内の高さ 2.2m 以下の構造物は地図作成時の写り込みとして除去 (手順は tools/pcd_to_world/README.md)。
          map = 点群座標 (恒等変換、モデル姿勢は原点)。点群はローカル座標系 (x -75.7..289.8, y -143.0..133.4, z -3.4..62.3) で
          緯度経度情報は無い。
          ライセンス: 元データ open-rdc/orne-box (BSD 2-Clause, Copyright (c) 2014, Robot Design and Control Lab.)。models/tsudanuma/NOTICE 参照 -->

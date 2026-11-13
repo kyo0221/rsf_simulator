@@ -19,17 +19,22 @@ env -u PYTHONPATH /home/kyo/pcd2pgm_ws/venv/bin/python -u pcd_to_world.py \
 
 ### tsudanuma の再生成
 `--name` でモデル名を指定する(model.sdf の name / `model://<name>/...` / 既定の出力先 `models/<name>` に反映)。
-tsukuba 固有の入力(経路・ゾーン・箱置換)は無効化する。経路が無いので経路依存の処理(経路平滑化・collision 絞り込み・柱置換)は全域/無効になる。
+tsukuba 固有の入力(ゾーン・箱置換)は無効化し、経路は tsudanuma の waypoint を渡す。
 ```
 # 入力は密な点群(24,155,990 点、非圧縮 binary)。変換不要でそのまま読める。
 env -u PYTHONPATH /home/kyo/pcd2pgm_ws/venv/bin/python -u pcd_to_world.py \
   --name tsudanuma --pcd /home/kyo/Documents/tsudanuma.pcd \
-  --clear-waypoints none --clear-zones-file none --box-overrides-file none --probe 0,0
+  --clear-waypoints /home/kyo/rsf_ws/src/rsf_waypoint_manager/waypoints/tsudanuma_wp.yaml \
+  --clear-radius 1.0 --clear-max-h 2.2 --clear-zones-file none --clear-zone 0,0,9.869,-0.729,1.5,2.2 \
+  --box-overrides-file none --pole-route-radius none --probe 0,0
 ```
+- 経路 (tsudanuma_wp.yaml) の上には地図作成時の写り込み (高さ 1〜2m の塊) が多く残っており、除去しないとスタート直後から進めない。
+  経路から 1.0m 以内、スポーン (0,0) から WP0 までは 1.5m 以内の、上端 2.2m 以下の構造物を除去する。
+- 柱の自動実寸置換は無効にする (`--pole-route-radius none`)。有効だと経路の真上の写り込み (幅 0.5m・高さ 0.95m 前後) を柱として復元し、経路を塞ぐ。
 - voxel / min-count は tsukuba と同じ既定値。fine の三角形数が 4M を超えるため自動で voxel 0.15 にリトライされる
   (structures.obj 約 71MB、structures_collision.obj 約 13MB、約 50 秒、ピークメモリ約 2.3GB)。
 - 以前の疎な点群(約 2.1M 点、binary_compressed)では既定値だと構造物が 0 個になり、voxel 0.3 / min-count 2 で妥協していた。現在は不要。
-- 原点付近の地形高さは `(0,0) = -0.411`。
+- 原点付近の地形高さは `(0,0) = -0.394`。
 
 ## 座標系
 - **点群座標 = map 座標(恒等)**。点群の x,y は公式原点(36.082880°N, 140.076545°E, JGD2024)中心の局所 ENU、z は標高で、
