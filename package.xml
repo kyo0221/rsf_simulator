@@ -3,7 +3,7 @@
 <package format="3">
   <name>rsf_simulator</name>
   <version>0.1.0</version>
-  <description>Ignition Gazebo Fortress simulator for orne_box with Hokuyo RSF-X001 sensor system</description>
+  <description>Gazebo Harmonic simulator for orne_box with Hokuyo RSF-X001 sensor system</description>
   <maintainer email="s21c1135sc@chibatech.ac.jp">Kyo Yamashita</maintainer>
   <author email="teiruyamashita@icloud.com">Kyo Yamashita</author>
   <license>Apache-2.0</license>

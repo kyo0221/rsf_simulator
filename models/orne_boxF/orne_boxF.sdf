@@ -208,7 +208,6 @@
         <always_on>1</always_on>
         <visualize>0</visualize>
         <pose>-0.1 0 -0.02 0 -0 0</pose>
-        <ignition_frame_id>rsf_hokuyo3d_imu</ignition_frame_id>
         <gz_frame_id>rsf_hokuyo3d_imu</gz_frame_id>
       </sensor>
 
@@ -217,7 +216,6 @@
         <update_rate>1</update_rate>
         <always_on>1</always_on>
         <pose>-0.1 0 0.085 0 -0 0</pose>
-        <ignition_frame_id>rsf_gnss</ignition_frame_id>
         <gz_frame_id>rsf_gnss</gz_frame_id>
       </sensor>
 
@@ -269,7 +267,6 @@
         </lidar>
         <visualize>true</visualize>
         <pose>0 0 0 0 -0 0</pose>
-        <ignition_frame_id>rsf_hokuyo3d</ignition_frame_id>
         <gz_frame_id>rsf_hokuyo3d</gz_frame_id>
         <always_on>1</always_on>
       </sensor>
@@ -521,7 +518,7 @@
       </visual>
     </link>
 
-    <plugin name="ignition::gazebo::systems::DiffDrive" filename="libignition-gazebo-diff-drive-system.so">
+    <plugin name="gz::sim::systems::DiffDrive" filename="gz-sim-diff-drive-system">
       <left_joint>left_wheel_joint</left_joint>
       <right_joint>right_wheel_joint</right_joint>
       <wheel_separation>0.4615</wheel_separation>
@@ -533,7 +530,7 @@
       <child_frame_id>base_footprint</child_frame_id>
     </plugin>
 
-    <plugin name="ignition::gazebo::systems::OdometryPublisher" filename="libignition-gazebo-odometry-publisher-system.so">
+    <plugin name="gz::sim::systems::OdometryPublisher" filename="gz-sim-odometry-publisher-system">
       <odom_frame>rsf_odom</odom_frame>
       <robot_base_frame>rsf_hokuyo3d</robot_base_frame>
       <odom_publish_frequency>125</odom_publish_frequency>

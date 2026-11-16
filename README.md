@@ -1,28 +1,45 @@
 # rsf_simulator
 
-Gazebo (Ignition Fortress / Gazebo Harmonic) 上に RSF ロボットとワールドを起動する。
+Gazebo Harmonic 上につくばチャレンジのワールドと RSF ロボットを起動する。
+
+## 動作環境
+
+- Ubuntu 24.04 / ROS 2 Jazzy / Gazebo Harmonic
+- Git LFS（メッシュの取得に必要）
 
 ## 起動
-
-シミュレーションを使ったナビゲーションは、以下の順に起動する。`rsf_simulator` が Gazebo と ROS bridge を起動し、`rsf_bringup` は実機と同じロボット記述・TF を起動する。bringup から Gazebo は起動しない。
 
 ```bash
 ros2 launch rsf_simulator rsf_simulator.launch.py
 ```
 
+`rsf_simulator` は Gazebo・ロボットの spawn・ROS bridge を起動する。ロボット記述と TF は `rsf_bringup` 側で起動する。
+
 ## ワールドの選択
 
 | `world` | 内容 |
 |---|---|
-| `tsudanuma2-3`（デフォルト）| 津田沼キャンパス 2 号館 3 階 |
+| `tsukuba`（デフォルト）| つくばチャレンジ2026コース |
 | `tsudanuma` | 津田沼キャンパス |
-| `tsukuba` | つくばチャレンジ2026コース |
+| `tsudanuma2-3` | 津田沼キャンパス 2 号館 3 階 |
 
 ```bash
-ros2 launch rsf_simulator rsf_simulator.launch.py world:=tsukuba
+ros2 launch rsf_simulator rsf_simulator.launch.py world:=tsudanuma
 ```
 
+## ワールドだけを起動
+
+`robot:=none` でロボット・bridge を起動せず、ワールドだけを開く。自分のロボットは `ros_gz_sim create` で置く。
+
+```bash
+ros2 launch rsf_simulator rsf_simulator.launch.py robot:=none
+```
+
+`tsukuba` のスタート地点は x 24.808, y 3.303, z 25.049, yaw 3.065。
+
 ## topic
+
+ロボットを起動した場合（既定）の入出力。
 
 | ROS トピック | 向き | 内容 |
 |---|---|---|
