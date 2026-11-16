@@ -13,8 +13,6 @@
 ros2 launch rsf_simulator rsf_simulator.launch.py
 ```
 
-`tsukuba` のスタート地点は x 24.808, y 3.303, z 25.049, yaw 3.065。
-
 ## ワールドの選択
 
 | `world` | 内容 |
