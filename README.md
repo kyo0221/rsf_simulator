@@ -9,11 +9,13 @@ Gazebo Harmonic 上につくばチャレンジのワールドと RSF ロボッ�
 
 ## 起動
 
+既定ではワールドだけを開き、`/clock` を出す。自分のロボットは `ros_gz_sim create` で置く。
+
 ```bash
 ros2 launch rsf_simulator rsf_simulator.launch.py
 ```
 
-`rsf_simulator` は Gazebo・ロボットの spawn・ROS bridge を起動する。ロボット記述と TF は `rsf_bringup` 側で起動する。
+`tsukuba` のスタート地点は x 24.808, y 3.303, z 25.049, yaw 3.065。
 
 ## ワールドの選択
 
@@ -27,19 +29,19 @@ ros2 launch rsf_simulator rsf_simulator.launch.py
 ros2 launch rsf_simulator rsf_simulator.launch.py world:=tsudanuma
 ```
 
-## ワールドだけを起動
+## boxF を起動
 
-`robot:=none` でロボット・bridge を起動せず、ワールドだけを開く。自分のロボットは `ros_gz_sim create` で置く。
+`robot:=boxf` で boxF の spawn と ROS bridge も起動する。ロボット記述と TF は `rsf_bringup` 側で起動する。
 
 ```bash
-ros2 launch rsf_simulator rsf_simulator.launch.py robot:=none
+ros2 launch rsf_simulator rsf_simulator.launch.py robot:=boxf
 ```
 
-`tsukuba` のスタート地点は x 24.808, y 3.303, z 25.049, yaw 3.065。
+ロボットを追加するには `models/<名前>/model.sdf` と `config/<名前>_bridge.yaml` を置き、`robot:=<名前>` で起動する。
 
 ## topic
 
-ロボットを起動した場合（既定）の入出力。
+`robot:=boxf` の場合の入出力。
 
 | ROS トピック | 向き | 内容 |
 |---|---|---|
@@ -61,6 +63,6 @@ ros2 launch rsf_simulator rsf_simulator.launch.py robot:=none
 
 | 対象 | ライセンス |
 |---|---|
-| コード・設定・`models/orne_boxF`・`worlds/tsudanuma2-3.sdf` など下記以外 | Apache-2.0（`LICENSE`） |
+| コード・設定・`models/boxf`・`worlds/tsudanuma2-3.sdf` など下記以外 | Apache-2.0（`LICENSE`） |
 | `models/tsukuba`・`worlds/tsukuba.sdf` | CC BY-NC-SA 4.0。ISE Robotics の点群地図 [map_tc26_gnss_ise-robotics](https://github.com/raucha/tc-datasets/tree/add-map) を変換・改変したもの（`models/tsukuba/NOTICE`、`models/tsukuba/LICENSE`） |
 | `models/tsudanuma`・`worlds/tsudanuma.sdf` | BSD 2-Clause, Copyright (c) 2014, Robot Design and Control Lab.。[open-rdc/orne-box](https://github.com/open-rdc/orne-box/tree/humble/3d) の点群地図を変換・改変したもの（`models/tsudanuma/NOTICE`、`models/tsudanuma/LICENSE`） |

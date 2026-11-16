@@ -18,6 +18,8 @@ SPAWN_POSES = {
 
 def generate_launch_description():
     simulator_dir = get_package_share_directory('rsf_simulator')
+    config_dir = os.path.join(simulator_dir, 'config')
+    model_path = os.path.join(simulator_dir, 'models')
 
     world_arg = DeclareLaunchArgument(
         'world',
@@ -29,17 +31,16 @@ def generate_launch_description():
     )
     robot_arg = DeclareLaunchArgument(
         'robot',
-        default_value='orne_boxF',
-        choices=['orne_boxF', 'none'],
-        description='Robot model in rsf_simulator/models to spawn. '
-                    'none starts only Gazebo with the world (no robot, bridge, clock or emulator nodes)'
+        default_value='none',
+        description='Robot to spawn: none (world only) or a model name that has '
+                    'models/<robot>/model.sdf. config/<robot>_bridge.yaml is bridged when it exists'
     )
     gz_args_arg = DeclareLaunchArgument('gz_args', default_value='-r -v 4')
     emulator_params_arg = DeclareLaunchArgument(
         'emulator_params',
         default_value='',
         description='Parameters of the node that emulates the RSF-X001 outputs missing in Gazebo '
-                    '(LiDAR-rate LIO odometry, GPGGA fix quality, IMU in device axes). '
+                    '(LiDAR-rate LIO odometry, GPGGA fix quality, IMU in device axes), used by robot:=boxf. '
                     'If empty, config/rsf_device_emulator_<world>.yaml is used when it exists, '
                     'otherwise config/rsf_device_emulator.yaml'
     )
@@ -48,8 +49,6 @@ def generate_launch_description():
         simulator_dir, 'worlds', [LaunchConfiguration('world'), '.sdf']
     ])
 
-    model_path = os.path.join(simulator_dir, 'models')
-
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             os.path.join(get_package_share_directory('ros_gz_sim'), 'launch', 'gz_sim.launch.py')
@@ -57,67 +56,69 @@ def generate_launch_description():
         launch_arguments=[('gz_args', [LaunchConfiguration('gz_args'), ' ', world_file])]
     )
 
+    clock_bridge_node = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        name='clock_bridge',
+        arguments=['/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock'],
+        remappings=[('/clock', '/rsf/sim/clock_raw')],
+        output='screen',
+    )
+
+    clock_node = Node(
+        package='rsf_simulator',
+        executable='clock_throttle',
+        name='clock_throttle',
+        output='screen',
+    )
+
     def make_robot(context):
         robot = LaunchConfiguration('robot').perform(context)
         if robot == 'none':
             return []
+        model_file = os.path.join(model_path, robot, 'model.sdf')
+        if not os.path.exists(model_file):
+            robots = sorted(d for d in os.listdir(model_path) if d not in SPAWN_POSES)
+            raise RuntimeError(f"robot '{robot}' has no models/{robot}/model.sdf. Available: none, {', '.join(robots)}")
         world = LaunchConfiguration('world').perform(context)
         x, y, z, yaw = SPAWN_POSES[world]
 
-        spawn_node = Node(
+        nodes = [Node(
             package='ros_gz_sim',
             executable='create',
             arguments=[
                 '-world', world,
                 '-name', robot,
-                '-file', os.path.join(model_path, robot, f'{robot}.sdf'),
+                '-file', model_file,
                 '-x', str(x), '-y', str(y), '-z', str(z), '-Y', str(yaw),
             ],
             output='screen',
-        )
+        )]
 
-        bridge_node = Node(
-            package='ros_gz_bridge',
-            executable='parameter_bridge',
-            arguments=[
-                '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
-                '/rsf/hokuyo3d/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
-                '/rsf/imu@sensor_msgs/msg/Imu[gz.msgs.IMU',
-                '/rsf/nav_sat_fix@sensor_msgs/msg/NavSatFix[gz.msgs.NavSat',
-                '/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry',
-                '/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist',
-            ],
-            remappings=[
-                ('/clock', '/rsf/sim/clock_raw'),
-                ('/rsf/hokuyo3d/points', '/rsf/hokuyo_cloud2'),
-                ('/odom', '/rsf/rsf_odom'),
-                ('/rsf/imu', '/rsf/sim/imu'),
-                ('/rsf/nav_sat_fix', '/rsf/sim/nav_sat_fix'),
-            ],
-            output='screen',
-        )
+        bridge_config = os.path.join(config_dir, f'{robot}_bridge.yaml')
+        if os.path.exists(bridge_config):
+            nodes.append(Node(
+                package='ros_gz_bridge',
+                executable='parameter_bridge',
+                parameters=[{'config_file': bridge_config}],
+                output='screen',
+            ))
 
-        clock_node = Node(
-            package='rsf_simulator',
-            executable='clock_throttle',
-            name='clock_throttle',
-            output='screen',
-        )
+        if robot == 'boxf':
+            params = LaunchConfiguration('emulator_params').perform(context)
+            if not params:
+                params = os.path.join(config_dir, f'rsf_device_emulator_{world}.yaml')
+                if not os.path.exists(params):
+                    params = os.path.join(config_dir, 'rsf_device_emulator.yaml')
+            nodes.append(Node(
+                package='rsf_simulator',
+                executable='rsf_device_emulator',
+                name='rsf_device_emulator',
+                parameters=[params],
+                output='screen',
+            ))
 
-        params = LaunchConfiguration('emulator_params').perform(context)
-        if not params:
-            params = os.path.join(simulator_dir, 'config', f'rsf_device_emulator_{world}.yaml')
-            if not os.path.exists(params):
-                params = os.path.join(simulator_dir, 'config', 'rsf_device_emulator.yaml')
-        emulator_node = Node(
-            package='rsf_simulator',
-            executable='rsf_device_emulator.py',
-            name='rsf_device_emulator',
-            parameters=[params],
-            output='screen',
-        )
-
-        return [spawn_node, bridge_node, clock_node, emulator_node]
+        return nodes
 
     return LaunchDescription([
         world_arg,
@@ -126,5 +127,7 @@ def generate_launch_description():
         emulator_params_arg,
         AppendEnvironmentVariable('GZ_SIM_RESOURCE_PATH', model_path),
         gazebo,
+        clock_bridge_node,
+        clock_node,
         OpaqueFunction(function=make_robot),
     ])
