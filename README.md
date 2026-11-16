@@ -3,7 +3,7 @@
 ## 動作環境
 
 - Ubuntu 24.04 / ROS 2 Jazzy / Gazebo Harmonic
-- Git LFS（メッシュの取得に必要）
+- ワールドのメッシュはビルド時に [Releases](https://github.com/kyo0221/rsf_simulator/releases/tag/tc-2026) から取得する（ネットワークが必要）
 
 ## 起動
 

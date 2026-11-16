@@ -26,6 +26,20 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
+set(MESH_RELEASE_URL https://github.com/kyo0221/rsf_simulator/releases/download/tc-2026)
+set(MESH_SHA256_tsukuba 65643659c174120fe98666881f849e66501f4f271f4c7ea38973c2409cd8e5df)
+set(MESH_SHA256_tsudanuma 3e34ed74d2060387f21e6e944c8c6e98e32a174ddc376971545ad129ed3fe087)
+foreach(world tsukuba tsudanuma)
+  set(archive ${CMAKE_CURRENT_BINARY_DIR}/${world}_meshes.tar.gz)
+  set(extract_dir ${CMAKE_CURRENT_BINARY_DIR}/meshes/${world})
+  file(DOWNLOAD ${MESH_RELEASE_URL}/${world}_meshes.tar.gz ${archive}
+    EXPECTED_HASH SHA256=${MESH_SHA256_${world}} SHOW_PROGRESS)
+  if(NOT EXISTS ${extract_dir}/meshes)
+    file(ARCHIVE_EXTRACT INPUT ${archive} DESTINATION ${extract_dir})
+  endif()
+  install(DIRECTORY ${extract_dir}/meshes DESTINATION share/${PROJECT_NAME}/models/${world})
+endforeach()
+
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_gnss_geo test/test_gnss_geo.cpp)
