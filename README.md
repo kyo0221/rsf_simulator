@@ -1,7 +1,5 @@
 # rsf_simulator
 
-Gazebo Harmonic 上につくばチャレンジのワールドと RSF ロボットを起動する。
-
 ## 動作環境
 
 - Ubuntu 24.04 / ROS 2 Jazzy / Gazebo Harmonic
