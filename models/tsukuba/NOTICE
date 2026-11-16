@@ -1,5 +1,5 @@
 このモデル (models/tsukuba 配下のメッシュ・model.sdf・model.config) および worlds/tsukuba.sdf は、
-以下の点群地図を tools/pcd_to_world で地形・構造物メッシュに変換・改変したものです。
+以下の点群地図を地形・構造物メッシュに変換・改変したものです。
 
   元データ : map_tc26_gnss_ise-robotics (Tsukuba Challenge 2026 Course, GNSS map)
   提供     : ISE Robotics

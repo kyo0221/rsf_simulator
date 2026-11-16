@@ -24,7 +24,7 @@ def generate_launch_description():
         default_value='tsukuba',
         choices=['tsudanuma2-3', 'tsudanuma', 'tsukuba'],
         description='World in rsf_simulator/worlds: tsudanuma2-3 (building editor), '
-                    'tsudanuma (Tsudanuma campus, generated from a point cloud map by tools/pcd_to_world) or '
+                    'tsudanuma (Tsudanuma campus, generated from a point cloud map) or '
                     'tsukuba (Tsukuba city hall area with slopes)'
     )
     robot_arg = DeclareLaunchArgument(

@@ -119,7 +119,7 @@
     
 
 
-    <!-- つくば高精度点群地図(JGD2024, 2.5cm)から tools/pcd_to_world で生成。
+    <!-- つくば高精度点群地図(JGD2024, 2.5cm)から生成。
          map = 点群座標(公式原点 36.082880N,140.076545E 中心の局所 ENU、z は標高そのもの)。恒等変換で配置済み。
          ライセンス: 元データ map_tc26_gnss_ise-robotics (ISE Robotics) の CC BY-NC-SA 4.0 を継承。models/tsukuba/NOTICE 参照 -->
     <include>

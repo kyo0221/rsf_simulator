@@ -5,7 +5,7 @@
   <version>0.1.0</version>
   <description>Gazebo Harmonic simulator for orne_box with Hokuyo RSF-X001 sensor system</description>
   <maintainer email="s21c1135sc@chibatech.ac.jp">Kyo Yamashita</maintainer>
-  <author email="teiruyamashita@icloud.com">Kyo Yamashita</author>
+  <author email="s21c1135sc@chibatech.ac.jp">Kyo Yamashita</author>
   <license>Apache-2.0</license>
   <license file="models/tsukuba/LICENSE">CC-BY-NC-SA-4.0</license>
   <license file="models/tsudanuma/LICENSE">BSD-2-Clause</license>

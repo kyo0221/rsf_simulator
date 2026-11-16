@@ -1,5 +1,5 @@
 このモデル (models/tsudanuma 配下のメッシュ・model.sdf・model.config) および worlds/tsudanuma.sdf は、
-以下の点群地図 (ダウンサンプリング前の版) を tools/pcd_to_world で地形・構造物メッシュに変換・改変したものです。
+以下の点群地図 (ダウンサンプリング前の版) を地形・構造物メッシュに変換・改変したものです。
 
   元データ : orne_box_navigation_executor/config/maps/tsudanuma/tsudanuma.pcd (千葉工業大学 津田沼キャンパス)
   入手元   : https://github.com/open-rdc/orne-box/tree/humble/3d
